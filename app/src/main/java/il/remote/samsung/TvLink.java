@@ -62,6 +62,20 @@ public class TvLink {
         listener.onStatus("לא הצלחתי להתחבר ל-" + ip + ". בדוק שהטלוויזיה דולקת ובאותה רשת. ננסה אינפרא-אדום אם יש.");
     }
 
+    /** Connect using one specific method: 1 = WSS 8002, 2 = WS 8001, 3 = legacy 55000. Silent (no status callback). */
+    public synchronized boolean connectWith(String ip, String token, int method) {
+        disconnect();
+        this.ip = ip;
+        String nameB64 = Base64.getEncoder().encodeToString(APP_NAME.getBytes(StandardCharsets.UTF_8));
+        String path = "/api/v2/channels/samsung.remote.control?name=" + URLEncoder.encode(nameB64);
+        try {
+            if (method == 1) { openWs(ip, 8002, true, path + (token != null && !token.isEmpty() ? "&token=" + token : "")); mode = 1; }
+            else if (method == 2) { openWs(ip, 8001, false, path); mode = 1; }
+            else { openLegacy(ip); mode = 2; }
+            return true;
+        } catch (Exception e) { closeQuiet(); mode = 0; return false; }
+    }
+
     public synchronized void disconnect() { closeQuiet(); mode = 0; }
 
     private void closeQuiet() {
@@ -101,6 +115,8 @@ public class TvLink {
         InputStream in = s.getInputStream();
         String head = readHeaders(in);
         if (!head.startsWith("HTTP/1.1 101")) { s.close(); throw new IOException("handshake: " + head); }
+        // wait for the first message (connect / unauthorized) – give the user time to press "Allow" on the TV
+        s.setSoTimeout(25000);
         String first = readFrame(in, o);
         if (first != null && first.contains("ms.channel.unauthorized")) {
             s.close(); throw new IOException("unauthorized");
