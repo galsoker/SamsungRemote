@@ -54,6 +54,9 @@ public class MainActivity extends Activity implements TvLink.Listener {
     private final Set<String> seen = Collections.synchronizedSet(new HashSet<>());
     private volatile boolean scanning = false;
 
+    private FrameLayout rootView;
+    private final List<String[]> foundTvs = Collections.synchronizedList(new ArrayList<>());
+    private volatile boolean wizardPending = false;
     private final List<View> screens = new ArrayList<>();
     private final List<TextView[]> navItems = new ArrayList<>();
 
@@ -101,12 +104,14 @@ public class MainActivity extends Activity implements TvLink.Listener {
         tv = new TvLink(this);
         try { ir = (ConsumerIrManager) getSystemService(CONSUMER_IR_SERVICE); } catch (Exception ignored) {}
         vib = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        if (prefs.getInt("method", 0) == 4) sendMode = 2;
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(CARD);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         setContentView(buildRoot());
         String ip = prefs.getString("ip", "");
-        if (!ip.isEmpty()) connect();
+        if (sendMode == 2) setDot(GREEN);
+        else if (!ip.isEmpty()) connect();
         else { setDot(RED); ui.postDelayed(this::openDiscovery, 300); }
     }
 
@@ -114,6 +119,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
 
     private View buildRoot() {
         FrameLayout root = new FrameLayout(this);
+        rootView = root;
         root.setBackgroundColor(BG);
 
         LinearLayout col = vbox();
@@ -134,7 +140,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
         chip = new TextView(this);
         chip.setTextColor(Color.WHITE); chip.setTextSize(14); chip.setTypeface(Typeface.DEFAULT_BOLD);
         chip.setPadding(dp(18), dp(10), dp(18), dp(10));
-        chip.setElevation(dp(12));
+        chip.setElevation(dp(30));
         chip.setAlpha(0f);
         FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         clp.topMargin = dp(78);
@@ -143,6 +149,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
         overlay = buildDeviceScreen();
         overlay.setVisibility(View.GONE);
         root.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
+        chip.bringToFront();
         return root;
     }
 
@@ -193,7 +200,6 @@ public class MainActivity extends Activity implements TvLink.Listener {
         return n.isEmpty() ? "בחר טלוויזיה" : n;
     }
 
-    private LinearLayout pagesHolder;
     private final List<View> pages = new ArrayList<>();
     private final List<View> dots = new ArrayList<>();
     private int pageIdx = 0;
@@ -621,6 +627,12 @@ public class MainActivity extends Activity implements TvLink.Listener {
         TextView find = primary("📡  חיפוש טלוויזיה ברשת");
         fx(find, null, false, this::openDiscovery);
         v.addView(find, new LinearLayout.LayoutParams(-1, dp(56)));
+        TextView wiz2 = cardBtn("🔊", "זיהוי אוטומטי: ננסה להגביר עד שיופיע בטלוויזיה");
+        wiz2.setTextSize(13);
+        fx(wiz2, null, false, this::startWizard);
+        LinearLayout.LayoutParams wz2 = new LinearLayout.LayoutParams(-1, dp(80));
+        wz2.topMargin = dp(10);
+        v.addView(wiz2, wz2);
 
         v.addView(sectionTitle("חיבור"));
         LinearLayout sr = hbox();
@@ -792,6 +804,13 @@ public class MainActivity extends Activity implements TvLink.Listener {
         warn.addView(wt, new LinearLayout.LayoutParams(0, -2, 1f));
         inner.addView(warn);
 
+        TextView wiz = primary("🔊  זיהוי אוטומטי – ננסה להגביר עד שיופיע בטלוויזיה");
+        wiz.setTextSize(14);
+        fx(wiz, null, false, this::startWizard);
+        LinearLayout.LayoutParams wzl = new LinearLayout.LayoutParams(-1, dp(60));
+        wzl.topMargin = dp(12);
+        inner.addView(wiz, wzl);
+
         resultsList = vbox();
         resultsList.setPadding(0, dp(12), 0, dp(12));
         inner.addView(resultsList);
@@ -810,7 +829,8 @@ public class MainActivity extends Activity implements TvLink.Listener {
         fx(go, null, false, () -> {
             String ip = manualIp.getText().toString().trim();
             if (ip.isEmpty()) return;
-            prefs.edit().putString("ip", ip).apply();
+            prefs.edit().putString("ip", ip).putInt("method", 0).apply();
+            if (sendMode == 2) sendMode = 0;
             closeDiscovery(); connect();
         });
         mr.addView(go, sideBtn());
@@ -826,7 +846,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
         fx(irBtn, null, false, () -> {
             if (!hasIr()) { flash("לטלפון הזה אין משדר אינפרא-אדום", false); return; }
             sendMode = 2; if (modeBtn != null) modeBtn.setText("⇆\n" + modeLabel());
-            prefs.edit().putString("tvname", "Samsung · IR").apply();
+            prefs.edit().putString("tvname", "Samsung · IR").putInt("method", 4).apply();
             tvTitle.setText("Samsung · IR");
             setDot(GREEN);
             closeDiscovery();
@@ -841,6 +861,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
         overlay.setTranslationX(-dp(40));
         overlay.setAlpha(0f);
         overlay.animate().alpha(1f).translationX(0).setDuration(220).start();
+        chip.bringToFront();
         startScan();
     }
 
@@ -853,6 +874,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
         if (scanning) return;
         scanning = true;
         seen.clear();
+        foundTvs.clear();
         resultsList.removeAllViews();
         scanSpin.setVisibility(View.VISIBLE);
         scanTitle.setText("מחפש מכשירים");
@@ -865,6 +887,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
             ui.post(() -> {
                 scanSpin.setVisibility(View.GONE);
                 scanTitle.setText("בחר מכשיר");
+                if (wizardPending) { wizardPending = false; startWizardNow(); }
                 if (resultsList.getChildCount() == 0) {
                     TextView t = text("לא נמצאו טלוויזיות. הדלק את הטלוויזיה ונסה שוב, או הזן IP ידנית.", 14, SUB, false);
                     t.setGravity(Gravity.CENTER);
@@ -944,6 +967,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
         String kind = tizen ? "Wi-Fi" : legacy ? "דגם ישן" : "Samsung";
         final String n = name != null ? name : "Samsung TV";
         final String sub = (model != null ? model + " · " : "") + ip;
+        foundTvs.add(new String[]{ip, n, mac, tizen ? "t" : legacy ? "l" : "s"});
         ui.post(() -> addResult(ip, n, sub, kind, mac));
     }
 
@@ -970,7 +994,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
         k.setBackground(round(0x1A2FB872, dp(10), 0));
         card.addView(k);
         fx(card, "מתחבר ל-" + name, false, () -> {
-            SharedPreferences.Editor e = prefs.edit().putString("ip", ip).putString("tvname", name);
+            SharedPreferences.Editor e = prefs.edit().putString("ip", ip).putString("tvname", name).putInt("method", 0);
             if (mac != null && !mac.isEmpty()) e.putString("mac", mac);
             e.apply();
             manualIp.setText(ip);
@@ -991,7 +1015,11 @@ public class MainActivity extends Activity implements TvLink.Listener {
         String ip = prefs.getString("ip", "");
         if (ip.isEmpty()) { setDot(RED); return; }
         setDot(ORANGE);
-        bg.execute(() -> tv.connect(ip, prefs.getString("token", "")));
+        int m = prefs.getInt("method", 0);
+        bg.execute(() -> {
+            if (m >= 1 && m <= 3 && tv.connectWith(ip, prefs.getString("token", ""), m)) onStatus("ok");
+            else tv.connect(ip, prefs.getString("token", ""));
+        });
     }
 
     private String modeLabel() { return sendMode == 0 ? "מצב: אוטומטי" : sendMode == 1 ? "מצב: Wi-Fi בלבד" : "מצב: אינפרא-אדום"; }
@@ -1024,7 +1052,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
     private boolean sendIr(String key) {
         Integer cmd = IR.get(key);
         if (cmd == null || !hasIr()) return false;
-        try { ir.transmit(38000, samsung32(0x07, cmd)); return true; } catch (Exception e) { return false; }
+        try { ir.transmit(38000, samsung32(prefs.getInt("ir_addr", 0x07), cmd)); return true; } catch (Exception e) { return false; }
     }
 
     private static int[] samsung32(int addr, int cmd) {
@@ -1106,6 +1134,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
 
     private void flash(String msg, boolean ok) {
         ui.post(() -> {
+            chip.bringToFront();
             chip.setText((ok ? "✓  " : "✕  ") + msg);
             chip.setBackground(round(ok ? 0xEE2A3052 : 0xEEE5484D, dp(22), 0));
             ui.removeCallbacks(hideChip);
@@ -1113,7 +1142,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
             chip.setTranslationY(-dp(10));
             chip.setScaleX(0.9f); chip.setScaleY(0.9f);
             chip.animate().alpha(1f).translationY(0).scaleX(1f).scaleY(1f).setDuration(160).start();
-            ui.postDelayed(hideChip, 900);
+            ui.postDelayed(hideChip, 1100);
         });
     }
 
@@ -1237,6 +1266,201 @@ public class MainActivity extends Activity implements TvLink.Listener {
         e.setPadding(dp(14), 0, dp(14), 0);
         e.setBackground(round(CARD, dp(16), STROKE));
         return e;
+    }
+
+    // ============================ PAIRING WIZARD ============================
+    private static class Cand { String label, ip, name, mac; int method; int irAddr; }
+    private final List<Cand> cands = new ArrayList<>();
+    private int candIdx = 0;
+    private FrameLayout wizView;
+    private TextView wizStep, wizTitle, wizSub, wizStatus;
+
+    private void startWizard() {
+        haptic();
+        if (scanning) { wizardPending = true; flash("ממתין לסיום החיפוש...", true); if (overlay.getVisibility() != View.VISIBLE) openDiscovery(); return; }
+        if (foundTvs.isEmpty()) { wizardPending = true; flash("מחפש טלוויזיות קודם...", true); if (overlay.getVisibility() != View.VISIBLE) openDiscovery(); else startScan(); return; }
+        startWizardNow();
+    }
+
+    private void startWizardNow() {
+        cands.clear();
+        String[] mnames = {"", "Wi-Fi מאובטח (8002)", "Wi-Fi (8001)", "פרוטוקול ישן (55000)"};
+        synchronized (foundTvs) {
+            for (String[] t : foundTvs) {
+                int[] order = "l".equals(t[3]) ? new int[]{3, 1, 2} : new int[]{1, 2, 3};
+                for (int m : order) {
+                    Cand c = new Cand();
+                    c.ip = t[0]; c.name = t[1]; c.mac = t[2]; c.method = m;
+                    c.label = t[1] + " · " + mnames[m];
+                    cands.add(c);
+                }
+            }
+        }
+        if (hasIr()) {
+            for (int a : new int[]{0x07, 0x0E, 0x05}) {
+                Cand c = new Cand();
+                c.method = 4; c.irAddr = a; c.name = "Samsung · IR";
+                c.label = "אינפרא-אדום · קוד 0x" + Integer.toHexString(a).toUpperCase(Locale.ROOT);
+                cands.add(c);
+            }
+        }
+        if (cands.isEmpty()) { flash("לא נמצאו טלוויזיות לבדיקה, ואין משדר IR", false); return; }
+        buildWizardView();
+        candIdx = 0;
+        runStep();
+    }
+
+    private void buildWizardView() {
+        if (wizView != null) rootView.removeView(wizView);
+        wizView = new FrameLayout(this);
+        wizView.setBackgroundColor(0x99141830);
+        wizView.setClickable(true);
+        wizView.setElevation(dp(24));
+        LinearLayout card = vbox();
+        card.setPadding(dp(22), dp(22), dp(22), dp(18));
+        card.setBackground(round(CARD, dp(28), STROKE));
+        card.setElevation(dp(20));
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER);
+        lp.setMargins(dp(18), 0, dp(18), 0);
+        wizView.addView(card, lp);
+
+        wizStep = text("", 13, ACC, true);
+        card.addView(wizStep);
+        TextView big = text("🔊", 44, INK, false);
+        big.setGravity(Gravity.CENTER);
+        big.setPadding(0, dp(8), 0, dp(4));
+        card.addView(big);
+        wizTitle = text("", 19, INK, true);
+        wizTitle.setGravity(Gravity.CENTER);
+        card.addView(wizTitle);
+        wizSub = text("", 14, SUB, false);
+        wizSub.setGravity(Gravity.CENTER);
+        wizSub.setPadding(0, dp(6), 0, dp(6));
+        card.addView(wizSub);
+        wizStatus = text("", 14, INK, true);
+        wizStatus.setGravity(Gravity.CENTER);
+        wizStatus.setPadding(0, dp(6), 0, dp(14));
+        card.addView(wizStatus);
+
+        TextView yes = text("✓  כן, הווליום עלה בטלוויזיה", 16, Color.WHITE, true);
+        yes.setGravity(Gravity.CENTER);
+        yes.setBackground(ripple(round(GREEN, dp(18), 0), dp(18), 0x55FFFFFF));
+        yes.setElevation(dp(4));
+        fx(yes, null, false, this::wizardYes);
+        card.addView(yes, new LinearLayout.LayoutParams(-1, dp(56)));
+
+        LinearLayout row = hbox();
+        row.setPadding(0, dp(10), 0, 0);
+        TextView again = cardBtn("↻", "שלח שוב");
+        again.setTextSize(13);
+        fx(again, null, false, this::sendStepKey);
+        LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, dp(70), 1f);
+        a.setMargins(0, 0, dp(5), 0);
+        row.addView(again, a);
+        TextView next = cardBtn("→", "לא, נסה הבא");
+        next.setTextSize(13);
+        fx(next, null, false, () -> { candIdx++; runStep(); });
+        LinearLayout.LayoutParams b = new LinearLayout.LayoutParams(0, dp(70), 1f);
+        b.setMargins(dp(5), 0, 0, 0);
+        row.addView(next, b);
+        card.addView(row);
+
+        TextView cancel = text("ביטול", 15, SUB, true);
+        cancel.setGravity(Gravity.CENTER);
+        cancel.setPadding(0, dp(14), 0, dp(4));
+        fx(cancel, null, false, this::closeWizard);
+        card.addView(cancel);
+
+        rootView.addView(wizView, new FrameLayout.LayoutParams(-1, -1));
+        chip.bringToFront();
+        wizView.setAlpha(0f);
+        card.setScaleX(0.9f); card.setScaleY(0.9f);
+        wizView.animate().alpha(1f).setDuration(200).start();
+        card.animate().scaleX(1f).scaleY(1f).setInterpolator(new OvershootInterpolator(2f)).setDuration(260).start();
+    }
+
+    private void closeWizard() {
+        if (wizView == null) return;
+        final View w = wizView;
+        wizView = null;
+        w.animate().alpha(0f).setDuration(180).withEndAction(() -> rootView.removeView(w)).start();
+    }
+
+    private void runStep() {
+        if (wizView == null) return;
+        if (candIdx >= cands.size()) {
+            wizStep.setText("סיום");
+            wizTitle.setText("לא מצאנו שיטה שעובדת");
+            wizSub.setText("ודא שהטלוויזיה דולקת ובאותה רשת Wi-Fi, ובטלוויזיה: הגדרות ← כללי ← מנהל התקנים חיצוניים ← מנהל חיבור התקנים ← אפשר גישה.");
+            wizStatus.setText("");
+            return;
+        }
+        Cand c = cands.get(candIdx);
+        wizStep.setText("ניסיון " + (candIdx + 1) + " מתוך " + cands.size());
+        wizTitle.setText(c.label);
+        wizSub.setText(c.method == 1
+                ? "אם מופיעה בטלוויזיה בקשת אישור – בחר \"אפשר\" עם השלט המקורי, ואז לחץ \"שלח שוב\"."
+                : "תסתכל על הטלוויזיה: האם הופיע סרגל ווליום?");
+        sendStepKey();
+    }
+
+    private void sendStepKey() {
+        if (wizView == null || candIdx >= cands.size()) return;
+        final Cand c = cands.get(candIdx);
+        final int myIdx = candIdx;
+        wizStatus.setTextColor(ORANGE);
+        wizStatus.setText(c.method == 4 ? "שולח ווליום +..." : "מתחבר ושולח ווליום +...");
+        bg.execute(() -> {
+            boolean ok;
+            if (c.method == 4) {
+                try {
+                    ir.transmit(38000, samsung32(c.irAddr, 0x07));
+                    sleep(150);
+                    ir.transmit(38000, samsung32(c.irAddr, 0x07));
+                    ok = true;
+                } catch (Exception e) { ok = false; }
+            } else {
+                ok = tv.connectWith(c.ip, prefs.getString("token", ""), c.method);
+                if (ok) { sleep(300); ok = tv.sendKey("KEY_VOLUP", "Click"); sleep(250); tv.sendKey("KEY_VOLUP", "Click"); }
+            }
+            final boolean fok = ok;
+            ui.post(() -> {
+                if (wizView == null || candIdx != myIdx) return;
+                if (fok) {
+                    wizStatus.setTextColor(GREEN);
+                    wizStatus.setText("נשלח ווליום + ✓  האם זה הופיע בטלוויזיה?");
+                } else {
+                    wizStatus.setTextColor(RED);
+                    wizStatus.setText("השיטה הזאת לא מתחברת – עוברים לבאה...");
+                    ui.postDelayed(() -> { if (wizView != null && candIdx == myIdx) { candIdx++; runStep(); } }, 1300);
+                }
+            });
+        });
+    }
+
+    private void wizardYes() {
+        if (candIdx >= cands.size()) { closeWizard(); return; }
+        Cand c = cands.get(candIdx);
+        SharedPreferences.Editor e = prefs.edit().putInt("method", c.method).putString("tvname", c.name);
+        if (c.method == 4) {
+            e.putInt("ir_addr", c.irAddr);
+            sendMode = 2;
+            setDot(GREEN);
+        } else {
+            e.putString("ip", c.ip);
+            if (c.mac != null && !c.mac.isEmpty()) e.putString("mac", c.mac);
+            if (manualIp != null) manualIp.setText(c.ip);
+            if (c.mac != null && macField != null) macField.setText(c.mac);
+            sendMode = 0;
+            setDot(tv.isConnected() ? GREEN : ORANGE);
+        }
+        e.apply();
+        if (modeBtn != null) modeBtn.setText("⇆\n" + modeLabel());
+        tvTitle.setText(c.name);
+        closeWizard();
+        if (overlay.getVisibility() == View.VISIBLE) closeDiscovery();
+        flash("הטלוויזיה קושרה בהצלחה!", true);
+        if (c.method != 4 && !tv.isConnected()) connect();
     }
 
     @Override public void onStatus(String msg) {
