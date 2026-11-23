@@ -2,6 +2,7 @@ package il.remote.samsung;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
@@ -31,10 +32,9 @@ import java.util.concurrent.*;
 
 public class MainActivity extends Activity implements TvLink.Listener {
 
-    private static final int BG1 = 0xFF07090F, BG2 = 0xFF121829;
-    private static final int SURF = 0xFF1A2032, SURF2 = 0xFF242C44, STROKE = 0x22FFFFFF;
-    private static final int ACC = 0xFF3D7BFF, ACC2 = 0xFF8A5CFF, RED = 0xFFE5484D, GREEN = 0xFF30C67C, ORANGE = 0xFFF5A524;
-    private static final int TXT = 0xFFFFFFFF, SUB = 0xFF8C96B3;
+    private static final int BG = 0xFFF3F5FA, CARD = 0xFFFFFFFF, CARD2 = 0xFFF8F9FD, STROKE = 0xFFE2E6F0;
+    private static final int INK = 0xFF2A3052, SUB = 0xFF8B93AD, SOFT = 0xFFC5CBDC;
+    private static final int ACC = 0xFF4B5EEA, ACC2 = 0xFF2632B5, RED = 0xFFE5484D, GREEN = 0xFF2FB872, ORANGE = 0xFFF2A11F;
 
     private TvLink tv;
     private SharedPreferences prefs;
@@ -45,14 +45,17 @@ public class MainActivity extends Activity implements TvLink.Listener {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private int sendMode = 0;
 
-    private TextView statusText, statusDot, tvNameText, chip, modeBtn;
-    private FrameLayout overlay;
+    private TextView tvTitle, statusDot, chip, modeBtn;
+    private FrameLayout overlay, content;
     private LinearLayout resultsList;
     private TextView scanTitle;
-    private ProgressBar scanBar;
+    private ProgressBar scanSpin;
     private EditText manualIp, macField;
     private final Set<String> seen = Collections.synchronizedSet(new HashSet<>());
     private volatile boolean scanning = false;
+
+    private final List<View> screens = new ArrayList<>();
+    private final List<TextView[]> navItems = new ArrayList<>();
 
     private static final Map<String, Integer> IR = new HashMap<>();
     static {
@@ -71,7 +74,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
             {"KEY_SUB_TITLE", 0x25}, {"KEY_PICTURE_SIZE", 0x3E}, {"KEY_SLEEP", 0x03},
             {"KEY_HDMI1", 0xE9}, {"KEY_HDMI2", 0xBE}, {"KEY_HDMI3", 0xC2}, {"KEY_HDMI4", 0xC5},
             {"KEY_PMODE", 0x28}, {"KEY_AD", 0xE4}, {"KEY_E_MANUAL", 0x3F}, {"KEY_3D", 0x9F},
-            {"KEY_DTV", 0x27}, {"KEY_W_LINK", 0x8C}, {"KEY_ANTENA", 0x36},
+            {"KEY_DTV", 0x27}, {"KEY_W_LINK", 0x8C}, {"KEY_ANTENA", 0x36}, {"KEY_COMPONENT1", 0x86}, {"KEY_AV1", 0x84},
         };
         for (Object[] r : t) IR.put((String) r[0], (Integer) r[1]);
     }
@@ -81,14 +84,14 @@ public class MainActivity extends Activity implements TvLink.Listener {
         {"YouTube", "111299001912", "111299001912", "#FF0033"},
         {"Prime Video", "3201910019365", "3201512006785", "#00A8E1"},
         {"Disney+", "3201901017640", "3201901017640", "#113CCF"},
-        {"Apple TV", "3201807016597", "3201807016597", "#3A3A3C"},
+        {"Apple TV", "3201807016597", "3201807016597", "#1C1C1E"},
         {"Spotify", "3201606009684", "3201606009684", "#1DB954"},
         {"Yes+", "3201908019041", "3201908019041", "#0072CE"},
         {"Cellcom TV", "3201812017479", "3201812017479", "#6C2DC7"},
-        {"Partner TV", "3201910019279", "3201910019279", "#00B2A9"},
-        {"כאן 11", "3202011022131", "3202011022131", "#F2A900"},
+        {"Partner TV", "3201910019279", "3201910019279", "#00A99D"},
+        {"כאן 11", "3202011022131", "3202011022131", "#E8A200"},
         {"דפדפן", "org.tizen.browser", "3201907018784", "#4A5568"},
-        {"Plex", "3201512006963", "3201512006963", "#E5A00D"},
+        {"Plex", "3201512006963", "3201512006963", "#D9930B"},
     };
 
     @Override
@@ -98,467 +101,752 @@ public class MainActivity extends Activity implements TvLink.Listener {
         tv = new TvLink(this);
         try { ir = (ConsumerIrManager) getSystemService(CONSUMER_IR_SERVICE); } catch (Exception ignored) {}
         vib = (Vibrator) getSystemService(VIBRATOR_SERVICE);
-        getWindow().setStatusBarColor(BG1);
-        getWindow().setNavigationBarColor(BG2);
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(CARD);
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         setContentView(buildRoot());
         String ip = prefs.getString("ip", "");
-        refreshStatus("מתחבר...");
         if (!ip.isEmpty()) connect();
-        else ui.postDelayed(this::openDiscovery, 350);
+        else { setDot(RED); ui.postDelayed(this::openDiscovery, 300); }
     }
 
     private boolean hasIr() { try { return ir != null && ir.hasIrEmitter(); } catch (Exception e) { return false; } }
 
     private View buildRoot() {
         FrameLayout root = new FrameLayout(this);
-        root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{BG1, BG2}));
+        root.setBackgroundColor(BG);
 
-        ScrollView sv = new ScrollView(this);
-        sv.setVerticalScrollBarEnabled(false);
-        LinearLayout c = vbox();
-        c.setPadding(dp(18), dp(14), dp(18), dp(32));
-        sv.addView(c);
-        root.addView(sv, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout col = vbox();
+        root.addView(col, new FrameLayout.LayoutParams(-1, -1));
+        col.addView(topBar());
 
-        c.addView(header());
-        c.addView(space(18));
-        c.addView(powerRow());
-        c.addView(space(22));
-        c.addView(dpad(), centered(dp(264), dp(264)));
-        c.addView(space(18));
-        c.addView(navRow());
-        c.addView(space(22));
-        c.addView(rockerBlock());
-        c.addView(space(22));
-        c.addView(colorRow());
-        c.addView(space(24));
-        c.addView(tabs());
+        content = new FrameLayout(this);
+        col.addView(content, new LinearLayout.LayoutParams(-1, 0, 1f));
+        screens.add(scroll(remoteScreen()));
+        screens.add(scroll(hdmiScreen()));
+        screens.add(scroll(appsScreen()));
+        screens.add(scroll(settingsScreen()));
+        for (View s : screens) content.addView(s, new FrameLayout.LayoutParams(-1, -1));
+
+        col.addView(bottomNav());
+        selectScreen(0);
 
         chip = new TextView(this);
-        chip.setTextColor(TXT); chip.setTextSize(15); chip.setTypeface(Typeface.DEFAULT_BOLD);
+        chip.setTextColor(Color.WHITE); chip.setTextSize(14); chip.setTypeface(Typeface.DEFAULT_BOLD);
         chip.setPadding(dp(18), dp(10), dp(18), dp(10));
-        chip.setBackground(round(0xF0263252, dp(24), 0x553D7BFF));
-        chip.setElevation(dp(10));
+        chip.setElevation(dp(12));
         chip.setAlpha(0f);
         FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        clp.topMargin = dp(70);
+        clp.topMargin = dp(78);
         root.addView(chip, clp);
 
-        overlay = buildDiscovery();
+        overlay = buildDeviceScreen();
         overlay.setVisibility(View.GONE);
         root.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
         return root;
     }
 
-    private View header() {
+    private View scroll(View v) {
+        ScrollView sv = new ScrollView(this);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.setFillViewport(true);
+        sv.addView(v);
+        return sv;
+    }
+
+    private View topBar() {
         LinearLayout h = hbox();
         h.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout titles = vbox();
-        titles.addView(text("שלט סמסונג", 26, TXT, true));
-        LinearLayout st = hbox();
-        st.setGravity(Gravity.CENTER_VERTICAL);
-        statusDot = new TextView(this);
-        statusDot.setBackground(round(ORANGE, dp(5), 0));
-        st.addView(statusDot, new LinearLayout.LayoutParams(dp(10), dp(10)));
-        statusText = text("", 13, SUB, false);
-        statusText.setPadding(dp(8), 0, 0, 0);
-        statusText.setMaxLines(2);
-        st.addView(statusText, new LinearLayout.LayoutParams(0, -2, 1f));
-        titles.addView(st);
-        tvNameText = text(prefs.getString("tvname", ""), 12, 0xFF5E6A8A, false);
-        titles.addView(tvNameText);
-        h.addView(titles, new LinearLayout.LayoutParams(0, -2, 1f));
+        h.setPadding(dp(16), dp(10), dp(16), dp(10));
 
-        TextView find = pill("📡  חפש טלוויזיה", ACC, ACC2);
-        find.setTextSize(13);
-        find.setPadding(dp(14), dp(10), dp(14), dp(10));
-        fx(find, null, false, this::openDiscovery);
-        h.addView(find, new LinearLayout.LayoutParams(-2, -2));
+        TextView cast = iconBtn("📡", 20);
+        fx(cast, null, false, this::openDiscovery);
+        h.addView(cast, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        tvTitle = text(titleText(), 18, INK, true);
+        tvTitle.setSingleLine(true);
+        tvTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        tvTitle.setPadding(dp(12), 0, dp(8), 0);
+        fx(tvTitle, null, false, this::openDiscovery);
+        h.addView(tvTitle, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        statusDot = new TextView(this);
+        h.addView(statusDot, new LinearLayout.LayoutParams(dp(10), dp(10)));
+        setDot(ORANGE);
+
+        View gap = new View(this);
+        h.addView(gap, new LinearLayout.LayoutParams(dp(12), 1));
+
+        TextView power = text("⏻", 26, RED, true);
+        power.setGravity(Gravity.CENTER);
+        GradientDrawable pg = new GradientDrawable();
+        pg.setShape(GradientDrawable.OVAL); pg.setColor(CARD); pg.setStroke(dp(1), STROKE);
+        power.setBackground(rippleOval(pg, 0x33E5484D));
+        power.setElevation(dp(6));
+        fx(power, null, false, this::power);
+        h.addView(power, new LinearLayout.LayoutParams(dp(56), dp(56)));
         return h;
     }
 
-    private View powerRow() {
-        LinearLayout r = hbox();
-        r.setGravity(Gravity.CENTER_VERTICAL);
-        TextView power = circle("⏻", 28, RED, 0xFFB3262B);
-        fx(power, null, false, this::power);
-        r.addView(power, new LinearLayout.LayoutParams(dp(64), dp(64)));
-        r.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
-        r.addView(keyPill("מקור", "KEY_SOURCE", "⎆  מקור"), new LinearLayout.LayoutParams(dp(110), dp(52)));
-        r.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
-        TextView mute = circle("🔇", 22, SURF2, SURF);
-        key(mute, "KEY_MUTE", "השתקה", false);
-        r.addView(mute, new LinearLayout.LayoutParams(dp(64), dp(64)));
-        return r;
+    private String titleText() {
+        String n = prefs.getString("tvname", "");
+        return n.isEmpty() ? "בחר טלוויזיה" : n;
     }
 
-    private View dpad() {
-        FrameLayout f = new FrameLayout(this);
-        GradientDrawable ring = new GradientDrawable();
-        ring.setShape(GradientDrawable.OVAL);
-        ring.setColors(new int[]{SURF2, SURF});
-        ring.setGradientType(GradientDrawable.RADIAL_GRADIENT);
-        ring.setGradientRadius(dp(180));
-        ring.setStroke(dp(1), STROKE);
-        f.setBackground(ring);
-        f.setElevation(dp(6));
-        String[][] arrows = {{"▲", "KEY_UP", "למעלה"}, {"▼", "KEY_DOWN", "למטה"}, {"◀", "KEY_LEFT", "שמאלה"}, {"▶", "KEY_RIGHT", "ימינה"}};
-        int[] grav = {Gravity.TOP | Gravity.CENTER_HORIZONTAL, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL,
-                Gravity.LEFT | Gravity.CENTER_VERTICAL, Gravity.RIGHT | Gravity.CENTER_VERTICAL};
-        for (int i = 0; i < 4; i++) {
-            TextView a = ghost(arrows[i][0], 22);
-            key(a, arrows[i][1], arrows[i][2], true);
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(78), dp(78), grav[i]);
-            lp.setMargins(dp(6), dp(6), dp(6), dp(6));
-            f.addView(a, lp);
-        }
-        TextView ok = circle("OK", 20, ACC, ACC2);
-        ok.setElevation(dp(8));
-        key(ok, "KEY_ENTER", "אישור", false);
-        f.addView(ok, new FrameLayout.LayoutParams(dp(100), dp(100), Gravity.CENTER));
-        return f;
-    }
+    private LinearLayout pagesHolder;
+    private final List<View> pages = new ArrayList<>();
+    private final List<View> dots = new ArrayList<>();
+    private int pageIdx = 0;
+    private FrameLayout padHolder;
+    private View dpadView, touchView;
+    private TextView segPad, segTouch;
 
-    private View navRow() {
-        LinearLayout r = hbox();
-        r.setGravity(Gravity.CENTER);
-        String[][] items = {{"↩", "KEY_RETURN", "חזור"}, {"⌂", "KEY_HOME", "בית"}, {"☰", "KEY_MENU", "תפריט"}, {"✕", "KEY_EXIT", "יציאה"}};
-        for (String[] it : items) {
-            LinearLayout col = vbox();
-            col.setGravity(Gravity.CENTER_HORIZONTAL);
-            TextView b = circle(it[0], 22, SURF2, SURF);
-            key(b, it[1], it[2], false);
-            col.addView(b, new LinearLayout.LayoutParams(dp(58), dp(58)));
-            TextView l = text(it[2], 11, SUB, false);
-            l.setGravity(Gravity.CENTER);
-            l.setPadding(0, dp(5), 0, 0);
-            col.addView(l);
-            r.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
-        }
-        return r;
-    }
-
-    private View rockerBlock() {
-        LinearLayout r = hbox();
-        r.setGravity(Gravity.CENTER_VERTICAL);
-        r.addView(rocker("VOL", "KEY_VOLUP", "KEY_VOLDOWN", "ווליום +", "ווליום −"), new LinearLayout.LayoutParams(dp(74), dp(196)));
-        LinearLayout mid = vbox();
-        mid.setGravity(Gravity.CENTER);
-        String[][] grid = {{"מדריך", "KEY_GUIDE"}, {"מידע", "KEY_INFO"}, {"כלים", "KEY_TOOLS"}, {"ערוצים", "KEY_CH_LIST"}, {"קודם", "KEY_PRECH"}, {"HDMI", "KEY_HDMI"}};
-        for (int i = 0; i < grid.length; i += 2) {
-            LinearLayout row = hbox();
-            for (int j = 0; j < 2; j++) {
-                TextView t = surfacePill(grid[i + j][0]);
-                key(t, grid[i + j][1], grid[i + j][0], false);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(52), 1f);
-                lp.setMargins(dp(4), dp(4), dp(4), dp(4));
-                row.addView(t, lp);
-            }
-            mid.addView(row);
-        }
-        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(0, -2, 1f);
-        mlp.setMargins(dp(10), 0, dp(10), 0);
-        r.addView(mid, mlp);
-        r.addView(rocker("CH", "KEY_CHUP", "KEY_CHDOWN", "ערוץ ▲", "ערוץ ▼"), new LinearLayout.LayoutParams(dp(74), dp(196)));
-        return r;
-    }
-
-    private View rocker(String label, String upKey, String downKey, String upLabel, String downLabel) {
+    private View remoteScreen() {
         LinearLayout v = vbox();
-        v.setGravity(Gravity.CENTER_HORIZONTAL);
-        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{SURF2, SURF});
-        g.setCornerRadius(dp(37));
+        v.setPadding(dp(16), dp(6), dp(16), dp(16));
+
+        LinearLayout top = hbox();
+        top.addView(rocker("CH", "KEY_CHUP", "KEY_CHDOWN", "ערוץ ▲", "ערוץ ▼", "︿", "﹀"), new LinearLayout.LayoutParams(dp(84), dp(232)));
+
+        FrameLayout pager = new FrameLayout(this) {
+            float sx; boolean swiping;
+            @Override public boolean onInterceptTouchEvent(MotionEvent e) {
+                if (e.getActionMasked() == MotionEvent.ACTION_DOWN) { sx = e.getX(); swiping = false; }
+                else if (e.getActionMasked() == MotionEvent.ACTION_MOVE && Math.abs(e.getX() - sx) > dp(28)) swiping = true;
+                return swiping;
+            }
+            @Override public boolean onTouchEvent(MotionEvent e) {
+                if (e.getActionMasked() == MotionEvent.ACTION_UP || e.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                    float dx = e.getX() - sx;
+                    if (Math.abs(dx) > dp(40)) showPage(pageIdx + (dx < 0 ? 1 : -1));
+                    swiping = false;
+                }
+                return true;
+            }
+        };
+        pages.add(grid4(new String[][]{{"⌂", "בית", "KEY_HOME"}, {"⌨", "מקלדת", "@KEYBOARD"}, {"↺", "חזור", "KEY_RETURN"}, {"🔇", "השתק", "KEY_MUTE"}}));
+        pages.add(grid4(new String[][]{{"☰", "תפריט", "KEY_MENU"}, {"⎆", "מקור", "KEY_SOURCE"}, {"▦", "מדריך", "KEY_GUIDE"}, {"ⓘ", "מידע", "KEY_INFO"}}));
+        pages.add(grid4(new String[][]{{"⏯", "נגן/השהה", "KEY_PLAY"}, {"⏹", "עצור", "KEY_STOP"}, {"⏪", "אחורה", "KEY_REWIND"}, {"⏩", "קדימה", "KEY_FF"}}));
+        pages.add(grid4(new String[][]{{"#", "מספרים", "@NUMBERS"}, {"≡", "ערוצים", "KEY_CH_LIST"}, {"⇄", "ערוץ קודם", "KEY_PRECH"}, {"✕", "יציאה", "KEY_EXIT"}}));
+        for (View p : pages) pager.addView(p, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, dp(232), 1f);
+        plp.setMargins(dp(8), 0, dp(8), 0);
+        top.addView(pager, plp);
+
+        top.addView(rocker("VOL", "KEY_VOLUP", "KEY_VOLDOWN", "ווליום +", "ווליום −", "+", "—"), new LinearLayout.LayoutParams(dp(84), dp(232)));
+        v.addView(top);
+
+        LinearLayout dotRow = hbox();
+        dotRow.setGravity(Gravity.CENTER);
+        dotRow.setPadding(0, dp(18), 0, dp(8));
+        for (int i = 0; i < pages.size(); i++) {
+            final int idx = i;
+            View d = new View(this);
+            LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(dp(9), dp(9));
+            dl.setMargins(dp(6), 0, dp(6), 0);
+            d.setOnClickListener(x -> showPage(idx));
+            dots.add(d);
+            dotRow.addView(d, dl);
+        }
+        v.addView(dotRow);
+        showPage(0);
+
+        LinearLayout segWrap = hbox();
+        segWrap.setGravity(Gravity.END);
+        LinearLayout seg = hbox();
+        seg.setBackground(round(CARD, dp(18), STROKE));
+        seg.setElevation(dp(3));
+        seg.setPadding(dp(4), dp(4), dp(4), dp(4));
+        segPad = text("✥", 20, INK, true);
+        segTouch = text("☝", 20, INK, true);
+        segPad.setGravity(Gravity.CENTER); segTouch.setGravity(Gravity.CENTER);
+        fx(segPad, null, false, () -> setPadMode(false));
+        fx(segTouch, null, false, () -> setPadMode(true));
+        seg.addView(segPad, new LinearLayout.LayoutParams(dp(60), dp(46)));
+        seg.addView(segTouch, new LinearLayout.LayoutParams(dp(60), dp(46)));
+        segWrap.addView(seg);
+        v.addView(segWrap);
+
+        padHolder = new FrameLayout(this);
+        dpadView = diamondPad();
+        touchView = touchPad();
+        padHolder.addView(dpadView, new FrameLayout.LayoutParams(dp(300), dp(300), Gravity.CENTER));
+        padHolder.addView(touchView, new FrameLayout.LayoutParams(-1, dp(300), Gravity.CENTER));
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-1, dp(320));
+        hlp.topMargin = dp(4);
+        v.addView(padHolder, hlp);
+        setPadMode(false);
+
+        LinearLayout br = hbox();
+        br.setPadding(0, dp(8), 0, 0);
+        TextView src = cardBtn("⇥", "מקור");
+        key(src, "KEY_SOURCE", "מקור", false);
+        br.addView(src, new LinearLayout.LayoutParams(dp(130), dp(62)));
+        br.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+        TextView menu = cardBtn("☰", "תפריט");
+        key(menu, "KEY_MENU", "תפריט", false);
+        br.addView(menu, new LinearLayout.LayoutParams(dp(130), dp(62)));
+        v.addView(br);
+
+        LinearLayout cr = hbox();
+        cr.setPadding(0, dp(16), 0, 0);
+        String[] cn = {"A", "B", "C", "D"};
+        String[] ck = {"KEY_RED", "KEY_GREEN", "KEY_YELLOW", "KEY_CYAN"};
+        int[] cc = {0xFFE5484D, 0xFF2FB872, 0xFFE8B400, 0xFF3B6FE0};
+        for (int i = 0; i < 4; i++) {
+            TextView t = text(cn[i], 14, Color.WHITE, true);
+            t.setGravity(Gravity.CENTER);
+            t.setBackground(ripple(round(cc[i], dp(14), 0), dp(14), 0x55FFFFFF));
+            t.setElevation(dp(3));
+            key(t, ck[i], "מקש " + cn[i], false);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+            lp.setMargins(dp(5), 0, dp(5), 0);
+            cr.addView(t, lp);
+        }
+        v.addView(cr);
+        return v;
+    }
+
+    private void showPage(int idx) {
+        if (idx < 0 || idx >= pages.size()) return;
+        int dir = idx > pageIdx ? 1 : -1;
+        for (int i = 0; i < pages.size(); i++) {
+            View p = pages.get(i);
+            if (i == idx) {
+                p.setVisibility(View.VISIBLE);
+                if (idx != pageIdx) { p.setTranslationX(dir * dp(60)); p.setAlpha(0f); p.animate().translationX(0).alpha(1f).setDuration(220).start(); }
+            } else p.setVisibility(View.GONE);
+            View d = dots.isEmpty() ? null : dots.get(i);
+            if (d != null) d.setBackground(round(i == idx ? ACC : SOFT, dp(5), 0));
+        }
+        pageIdx = idx;
+    }
+
+    private void setPadMode(boolean touch) {
+        dpadView.setVisibility(touch ? View.GONE : View.VISIBLE);
+        touchView.setVisibility(touch ? View.VISIBLE : View.GONE);
+        segPad.setBackground(touch ? null : round(0xFFE8EBF5, dp(14), 0));
+        segTouch.setBackground(touch ? round(0xFFE8EBF5, dp(14), 0) : null);
+        segPad.setTextColor(touch ? SUB : ACC);
+        segTouch.setTextColor(touch ? ACC : SUB);
+    }
+
+    private View grid4(String[][] items) {
+        LinearLayout g = vbox();
+        for (int r = 0; r < 2; r++) {
+            LinearLayout row = hbox();
+            for (int c = 0; c < 2; c++) {
+                String[] it = items[r * 2 + c];
+                TextView b = cardBtn(it[0], it[1]);
+                if (it[2].equals("@KEYBOARD")) fx(b, null, false, this::keyboardDialog);
+                else if (it[2].equals("@NUMBERS")) fx(b, null, false, this::numbersDialog);
+                else key(b, it[2], it[1], false);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+                lp.setMargins(dp(5), dp(5), dp(5), dp(5));
+                row.addView(b, lp);
+            }
+            g.addView(row, new LinearLayout.LayoutParams(-1, 0, 1f));
+        }
+        return g;
+    }
+
+    private TextView cardBtn(String icon, String label) {
+        TextView t = new TextView(this);
+        t.setText(icon + "\n" + label);
+        t.setTextColor(INK);
+        t.setTextSize(15);
+        t.setGravity(Gravity.CENTER);
+        t.setLineSpacing(dp(4), 1f);
+        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        t.setBackground(ripple(cardBg(dp(22)), dp(22), 0x224B5EEA));
+        t.setElevation(dp(4));
+        return t;
+    }
+
+    private GradientDrawable cardBg(int radius) {
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{CARD, CARD2});
+        g.setCornerRadius(radius);
         g.setStroke(dp(1), STROKE);
-        v.setBackground(g);
+        return g;
+    }
+
+    private View rocker(String label, String upKey, String downKey, String upL, String dnL, String upIcon, String dnIcon) {
+        LinearLayout v = vbox();
+        v.setBackground(cardBg(dp(26)));
         v.setElevation(dp(4));
-        TextView up = ghost(label.equals("VOL") ? "+" : "▲", 26);
-        key(up, upKey, upLabel, true);
+        TextView up = text(upIcon, 28, INK, false);
+        up.setGravity(Gravity.CENTER);
+        up.setBackground(rippleRound(dp(26), 0x224B5EEA));
+        key(up, upKey, upL, true);
         v.addView(up, new LinearLayout.LayoutParams(-1, 0, 1f));
-        TextView l = text(label, 12, SUB, true);
+        TextView l = text(label, 15, SUB, false);
         l.setGravity(Gravity.CENTER);
         v.addView(l, new LinearLayout.LayoutParams(-1, -2));
-        TextView dn = ghost(label.equals("VOL") ? "−" : "▼", 26);
-        key(dn, downKey, downLabel, true);
+        TextView dn = text(dnIcon, 28, INK, false);
+        dn.setGravity(Gravity.CENTER);
+        dn.setBackground(rippleRound(dp(26), 0x224B5EEA));
+        key(dn, downKey, dnL, true);
         v.addView(dn, new LinearLayout.LayoutParams(-1, 0, 1f));
         return v;
     }
 
-    private View colorRow() {
-        LinearLayout r = hbox();
-        String[] names = {"A", "B", "C", "D"};
-        String[] keys = {"KEY_RED", "KEY_GREEN", "KEY_YELLOW", "KEY_CYAN"};
-        int[] cols = {0xFFE5484D, 0xFF30A46C, 0xFFE2B200, 0xFF2F6BE0};
+    private View diamondPad() {
+        FrameLayout f = new FrameLayout(this);
+        View diamond = new View(this);
+        GradientDrawable dg = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{0xFFEFF2F9, 0xFFE3E8F3});
+        dg.setCornerRadius(dp(40));
+        dg.setStroke(dp(1), STROKE);
+        diamond.setBackground(dg);
+        diamond.setRotation(45f);
+        diamond.setElevation(dp(2));
+        f.addView(diamond, new FrameLayout.LayoutParams(dp(208), dp(208), Gravity.CENTER));
+
+        String[][] arrows = {{"▲", "KEY_UP", "למעלה"}, {"▼", "KEY_DOWN", "למטה"}, {"◀", "KEY_LEFT", "שמאלה"}, {"▶", "KEY_RIGHT", "ימינה"}};
+        int[] grav = {Gravity.TOP | Gravity.CENTER_HORIZONTAL, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL,
+                Gravity.LEFT | Gravity.CENTER_VERTICAL, Gravity.RIGHT | Gravity.CENTER_VERTICAL};
+        boolean[] horiz = {true, true, false, false};
         for (int i = 0; i < 4; i++) {
-            TextView t = pill(names[i], cols[i], darker(cols[i]));
-            t.setTextSize(15);
-            key(t, keys[i], "מקש " + names[i], false);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1f);
-            lp.setMargins(dp(5), 0, dp(5), 0);
-            r.addView(t, lp);
+            TextView a = text(arrows[i][0], 20, 0xFFB4BCD3, false);
+            a.setGravity(Gravity.CENTER);
+            a.setBackground(ripple(cardBg(dp(26)), dp(26), 0x334B5EEA));
+            a.setElevation(dp(5));
+            key(a, arrows[i][1], arrows[i][2], true);
+            int w = horiz[i] ? dp(118) : dp(74), h = horiz[i] ? dp(74) : dp(118);
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(w, h, grav[i]);
+            lp.setMargins(dp(14), dp(14), dp(14), dp(14));
+            f.addView(a, lp);
         }
-        return r;
+        TextView ok = text("OK", 30, Color.WHITE, true);
+        ok.setGravity(Gravity.CENTER);
+        GradientDrawable og = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{ACC, ACC2});
+        og.setShape(GradientDrawable.OVAL);
+        ok.setBackground(rippleOval(og, 0x55FFFFFF));
+        ok.setElevation(dp(10));
+        key(ok, "KEY_ENTER", "אישור", false);
+        f.addView(ok, new FrameLayout.LayoutParams(dp(112), dp(112), Gravity.CENTER));
+        return f;
     }
 
-    private final List<TextView> tabBtns = new ArrayList<>();
-    private final List<View> tabPages = new ArrayList<>();
-
-    private View tabs() {
-        LinearLayout wrap = vbox();
-        LinearLayout bar = hbox();
-        bar.setBackground(round(SURF, dp(16), STROKE));
-        bar.setPadding(dp(4), dp(4), dp(4), dp(4));
-        String[] names = {"מספרים", "מדיה", "אפליקציות", "עוד"};
-        FrameLayout pages = new FrameLayout(this);
-        tabPages.add(numbersPage());
-        tabPages.add(mediaPage());
-        tabPages.add(appsPage());
-        tabPages.add(morePage());
-        for (int i = 0; i < names.length; i++) {
-            final int idx = i;
-            TextView t = text(names[i], 14, SUB, true);
-            t.setGravity(Gravity.CENTER);
-            t.setPadding(0, dp(10), 0, dp(10));
-            fx(t, null, false, () -> selectTab(idx));
-            tabBtns.add(t);
-            bar.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
-            pages.addView(tabPages.get(i));
-        }
-        wrap.addView(bar);
-        wrap.addView(space(14));
-        wrap.addView(pages);
-        selectTab(0);
-        return wrap;
+    private View touchPad() {
+        TextView pad = text("החלק לניווט · הקש לאישור", 14, SUB, false);
+        pad.setGravity(Gravity.CENTER);
+        pad.setBackground(cardBg(dp(28)));
+        pad.setElevation(dp(4));
+        final float[] start = new float[2];
+        final long[] last = new long[1];
+        pad.setOnTouchListener((v, e) -> {
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    start[0] = e.getX(); start[1] = e.getY();
+                    v.animate().scaleX(0.98f).scaleY(0.98f).setDuration(80).start();
+                    return true;
+                case MotionEvent.ACTION_MOVE: {
+                    float dx = e.getX() - start[0], dy = e.getY() - start[1];
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) > dp(56) && System.currentTimeMillis() - last[0] > 120) {
+                        haptic();
+                        if (Math.abs(dx) > Math.abs(dy)) send(dx > 0 ? "KEY_RIGHT" : "KEY_LEFT", dx > 0 ? "ימינה" : "שמאלה");
+                        else send(dy > 0 ? "KEY_DOWN" : "KEY_UP", dy > 0 ? "למטה" : "למעלה");
+                        start[0] = e.getX(); start[1] = e.getY();
+                        last[0] = System.currentTimeMillis();
+                    }
+                    return true;
+                }
+                case MotionEvent.ACTION_UP: {
+                    v.animate().scaleX(1f).scaleY(1f).setInterpolator(new OvershootInterpolator(3f)).setDuration(220).start();
+                    float dx = e.getX() - start[0], dy = e.getY() - start[1];
+                    if (Math.abs(dx) < dp(12) && Math.abs(dy) < dp(12) && System.currentTimeMillis() - last[0] > 300) { haptic(); send("KEY_ENTER", "אישור"); }
+                    return true;
+                }
+                case MotionEvent.ACTION_CANCEL:
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(150).start();
+                    return true;
+            }
+            return false;
+        });
+        return pad;
     }
 
-    private void selectTab(int idx) {
-        for (int i = 0; i < tabBtns.size(); i++) {
-            boolean on = i == idx;
-            tabBtns.get(i).setTextColor(on ? TXT : SUB);
-            tabBtns.get(i).setBackground(on ? grad(ACC, ACC2, dp(12)) : null);
-            View p = tabPages.get(i);
-            if (on) { p.setVisibility(View.VISIBLE); p.setAlpha(0f); p.setTranslationY(dp(12)); p.animate().alpha(1f).translationY(0).setDuration(220).start(); }
-            else p.setVisibility(View.GONE);
-        }
+    private void keyboardDialog() {
+        EditText et = field("הקלד טקסט לשליחה לטלוויזיה");
+        LinearLayout box = vbox();
+        box.setPadding(dp(20), dp(10), dp(20), 0);
+        box.addView(et, new LinearLayout.LayoutParams(-1, dp(52)));
+        new AlertDialog.Builder(this).setTitle("מקלדת").setView(box)
+                .setPositiveButton("שלח", (d, w) -> {
+                    String s = et.getText().toString();
+                    bg.execute(() -> flash(tv.sendText(s) ? "הטקסט נשלח" : "שליחת טקסט דורשת חיבור Wi-Fi", tv.isConnected()));
+                }).setNegativeButton("ביטול", null).show();
     }
 
-    private View numbersPage() {
+    private void numbersDialog() {
         LinearLayout v = vbox();
-        String[][] rows = {{"1", "2", "3"}, {"4", "5", "6"}, {"7", "8", "9"}, {"-", "0", "↺"}};
+        v.setPadding(dp(16), dp(8), dp(16), dp(8));
+        String[][] rows = {{"1", "2", "3"}, {"4", "5", "6"}, {"7", "8", "9"}, {"-", "0", "⇄"}};
         String[][] keys = {{"KEY_1", "KEY_2", "KEY_3"}, {"KEY_4", "KEY_5", "KEY_6"}, {"KEY_7", "KEY_8", "KEY_9"}, {"KEY_PLUS100", "KEY_0", "KEY_PRECH"}};
-        for (int i = 0; i < rows.length; i++) {
+        for (int i = 0; i < 4; i++) {
             LinearLayout r = hbox();
             for (int j = 0; j < 3; j++) {
-                TextView t = surfacePill(rows[i][j]);
-                t.setTextSize(22);
+                TextView t = text(rows[i][j], 22, INK, true);
+                t.setGravity(Gravity.CENTER);
+                t.setBackground(ripple(cardBg(dp(18)), dp(18), 0x224B5EEA));
+                t.setElevation(dp(3));
                 key(t, keys[i][j], rows[i][j], false);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(60), 1f);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(58), 1f);
                 lp.setMargins(dp(5), dp(5), dp(5), dp(5));
                 r.addView(t, lp);
             }
             v.addView(r);
         }
-        return v;
+        new AlertDialog.Builder(this).setTitle("מספרים").setView(v).setNegativeButton("סגור", null).show();
     }
 
-    private View mediaPage() {
+    private View hdmiScreen() {
         LinearLayout v = vbox();
-        LinearLayout r1 = hbox();
-        String[][] m = {{"⏪", "KEY_REWIND", "הרצה אחורה"}, {"▶", "KEY_PLAY", "נגן"}, {"⏸", "KEY_PAUSE", "השהה"}, {"⏩", "KEY_FF", "הרצה קדימה"}};
-        for (String[] it : m) {
-            TextView t = circle(it[0], 22, SURF2, SURF);
-            key(t, it[1], it[2], false);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(64), 1f);
+        v.setPadding(dp(16), dp(10), dp(16), dp(24));
+        v.addView(header("בחירת מקור", "הקש כדי לעבור · לחיצה ארוכה כדי לשנות שם"));
+        String[][] inputs = {{"HDMI 1", "KEY_HDMI1"}, {"HDMI 2", "KEY_HDMI2"}, {"HDMI 3", "KEY_HDMI3"}, {"HDMI 4", "KEY_HDMI4"}};
+        LinearLayout row = null;
+        for (int i = 0; i < inputs.length; i++) {
+            if (i % 2 == 0) { row = hbox(); v.addView(row); }
+            final String keyName = inputs[i][1];
+            final String def = inputs[i][0];
+            LinearLayout card = vbox();
+            card.setGravity(Gravity.CENTER);
+            card.setBackground(ripple(cardBg(dp(24)), dp(24), 0x224B5EEA));
+            card.setElevation(dp(4));
+            TextView ic = text("▭", 34, ACC, true);
+            ic.setGravity(Gravity.CENTER);
+            card.addView(ic);
+            TextView nm = text(prefs.getString("name_" + keyName, def), 16, INK, true);
+            nm.setGravity(Gravity.CENTER);
+            card.addView(nm);
+            TextView sb = text(def, 12, SUB, false);
+            sb.setGravity(Gravity.CENTER);
+            card.addView(sb);
+            fx(card, null, false, () -> switchHdmi(keyName, nm.getText().toString(), i0(keyName)));
+            card.setOnLongClickListener(x -> { renameInput(keyName, def, nm); return true; });
+            card.setLongClickable(true);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(132), 1f);
             lp.setMargins(dp(6), dp(6), dp(6), dp(6));
-            r1.addView(t, lp);
+            row.addView(card, lp);
         }
-        v.addView(r1);
-        LinearLayout r2 = hbox();
-        String[][] m2 = {{"⏹  עצור", "KEY_STOP"}, {"⏺  הקלט", "KEY_REC"}, {"כתוביות", "KEY_SUB_TITLE"}};
-        for (String[] it : m2) {
-            TextView t = surfacePill(it[0]);
-            key(t, it[1], it[0], false);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(52), 1f);
+        v.addView(sectionTitle("מקורות נוספים"));
+        String[][] more = {{"📺", "טלוויזיה", "KEY_TV"}, {"📡", "אנטנה", "KEY_ANTENA"}, {"⎆", "תפריט מקורות", "KEY_SOURCE"},
+                {"🔁", "המקור הבא", "KEY_HDMI"}, {"AV", "AV", "KEY_AV1"}, {"▤", "Component", "KEY_COMPONENT1"}};
+        for (int i = 0; i < more.length; i++) {
+            if (i % 3 == 0) { row = hbox(); v.addView(row); }
+            TextView t = cardBtn(more[i][0], more[i][1]);
+            t.setTextSize(13);
+            key(t, more[i][2], more[i][1], false);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(86), 1f);
             lp.setMargins(dp(5), dp(5), dp(5), dp(5));
-            r2.addView(t, lp);
+            row.addView(t, lp);
         }
-        v.addView(r2);
+        TextView note = text("בדגמים חדשים שבהם מקשי HDMI ישירים לא עובדים, הפעל בהגדרות \"ניווט בתפריט מקורות\" והאפליקציה תפתח את תפריט המקורות ותנווט למקור שבחרת.", 12, SUB, false);
+        note.setPadding(dp(4), dp(14), dp(4), 0);
+        v.addView(note);
         return v;
     }
 
-    private View appsPage() {
+    private int i0(String k) { return k.charAt(k.length() - 1) - '1'; }
+
+    private void switchHdmi(String keyName, String label, int index) {
+        if (sendMode != 2 && tv.isConnected()) {
+            flash(label, true);
+            bg.execute(() -> {
+                tv.sendKey(keyName, "Click");
+                if (prefs.getBoolean("hdmi_nav", false)) {
+                    sleep(1500);
+                    tv.sendKey("KEY_SOURCE", "Click");
+                    sleep(1200);
+                    for (int i = 0; i < 8; i++) { tv.sendKey("KEY_LEFT", "Click"); sleep(120); }
+                    for (int i = 0; i < index + 1; i++) { tv.sendKey("KEY_RIGHT", "Click"); sleep(250); }
+                    tv.sendKey("KEY_ENTER", "Click");
+                }
+            });
+        } else send(keyName, label);
+    }
+
+    private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException ignored) {} }
+
+    private void renameInput(String keyName, String def, TextView nameView) {
+        haptic();
+        EditText et = field("למשל: PlayStation, סלקום, Apple TV");
+        et.setText(prefs.getString("name_" + keyName, ""));
+        LinearLayout box = vbox();
+        box.setPadding(dp(20), dp(10), dp(20), 0);
+        box.addView(et, new LinearLayout.LayoutParams(-1, dp(52)));
+        new AlertDialog.Builder(this).setTitle("שם עבור " + def).setView(box)
+                .setPositiveButton("שמור", (d, w) -> {
+                    String n = et.getText().toString().trim();
+                    prefs.edit().putString("name_" + keyName, n).apply();
+                    nameView.setText(n.isEmpty() ? def : n);
+                }).setNegativeButton("ביטול", null).show();
+    }
+
+    private View appsScreen() {
         LinearLayout v = vbox();
-        LinearLayout r = null;
+        v.setPadding(dp(16), dp(10), dp(16), dp(24));
+        v.addView(header("אפליקציות", "פתיחה ישירה בטלוויזיה"));
+        LinearLayout row = null;
         for (int i = 0; i < APPS.length; i++) {
-            if (i % 3 == 0) { r = hbox(); v.addView(r); }
+            if (i % 3 == 0) { row = hbox(); v.addView(row); }
             final String[] a = APPS[i];
             int col = Color.parseColor(a[3]);
-            TextView t = pill(a[0], col, darker(col));
-            t.setTextSize(14);
-            fx(t, "פותח " + a[0], false, () -> launch(a));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(66), 1f);
+            LinearLayout card = vbox();
+            card.setGravity(Gravity.CENTER);
+            card.setBackground(ripple(cardBg(dp(22)), dp(22), 0x224B5EEA));
+            card.setElevation(dp(4));
+            TextView logo = text(a[0].substring(0, 1), 22, Color.WHITE, true);
+            logo.setGravity(Gravity.CENTER);
+            logo.setBackground(round(col, dp(16), 0));
+            card.addView(logo, new LinearLayout.LayoutParams(dp(52), dp(52)));
+            TextView nm = text(a[0], 13, INK, true);
+            nm.setGravity(Gravity.CENTER);
+            nm.setPadding(0, dp(8), 0, 0);
+            card.addView(nm);
+            fx(card, "פותח " + a[0], false, () -> launch(a));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(118), 1f);
             lp.setMargins(dp(5), dp(5), dp(5), dp(5));
-            r.addView(t, lp);
+            row.addView(card, lp);
         }
         return v;
     }
 
-    private View morePage() {
+    private View settingsScreen() {
         LinearLayout v = vbox();
-        v.addView(sectionTitle("⌨  שליחת טקסט לטלוויזיה"));
-        LinearLayout tr = hbox();
-        EditText txt = field("הקלד לחיפוש בטלוויזיה");
-        tr.addView(txt, new LinearLayout.LayoutParams(0, dp(52), 1f));
-        TextView send = pill("שלח", ACC, ACC2);
-        fx(send, "טקסט נשלח", false, () -> {
-            String s = txt.getText().toString();
-            bg.execute(() -> { if (!tv.sendText(s)) flash("שליחת טקסט דורשת חיבור Wi-Fi", false); });
-        });
-        tr.addView(send, slp2());
-        v.addView(tr);
+        v.setPadding(dp(16), dp(10), dp(16), dp(24));
+        v.addView(header("הגדרות", "חיבור, בדיקות ומקשים מתקדמים"));
 
-        v.addView(sectionTitle("⚙  כל המקשים המתקדמים"));
+        TextView find = primary("📡  חיפוש טלוויזיה ברשת");
+        fx(find, null, false, this::openDiscovery);
+        v.addView(find, new LinearLayout.LayoutParams(-1, dp(56)));
+
+        v.addView(sectionTitle("חיבור"));
+        LinearLayout sr = hbox();
+        modeBtn = cardBtn("⇆", modeLabel());
+        modeBtn.setTextSize(13);
+        fx(modeBtn, null, false, this::cycleMode);
+        LinearLayout.LayoutParams m1 = new LinearLayout.LayoutParams(0, dp(84), 1f);
+        m1.setMargins(0, 0, dp(5), 0);
+        sr.addView(modeBtn, m1);
+        TextView test = cardBtn("🩺", "בדיקת כל השיטות");
+        test.setTextSize(13);
+        fx(test, null, false, this::testAll);
+        LinearLayout.LayoutParams m2 = new LinearLayout.LayoutParams(0, dp(84), 1f);
+        m2.setMargins(dp(5), 0, 0, 0);
+        sr.addView(test, m2);
+        v.addView(sr);
+
+        v.addView(sectionTitle("כתובת MAC להדלקה דרך Wi-Fi"));
+        LinearLayout macRow = hbox();
+        macField = field("AA:BB:CC:DD:EE:FF");
+        macField.setText(prefs.getString("mac", ""));
+        macRow.addView(macField, new LinearLayout.LayoutParams(0, dp(52), 1f));
+        TextView save = primary("שמור");
+        fx(save, "נשמר", false, () -> prefs.edit().putString("mac", macField.getText().toString().trim()).apply());
+        macRow.addView(save, sideBtn());
+        v.addView(macRow);
+
+        v.addView(sectionTitle("HDMI בדגמים חדשים"));
+        TextView nav = cardBtn("🧭", prefs.getBoolean("hdmi_nav", false) ? "ניווט בתפריט מקורות: פעיל" : "ניווט בתפריט מקורות: כבוי");
+        nav.setTextSize(13);
+        fx(nav, null, false, () -> {
+            boolean on = !prefs.getBoolean("hdmi_nav", false);
+            prefs.edit().putBoolean("hdmi_nav", on).apply();
+            nav.setText("🧭\n" + (on ? "ניווט בתפריט מקורות: פעיל" : "ניווט בתפריט מקורות: כבוי"));
+        });
+        v.addView(nav, new LinearLayout.LayoutParams(-1, dp(80)));
+
+        v.addView(sectionTitle("כל המקשים המתקדמים"));
         String[][] extra = {
-            {"HDMI 1", "KEY_HDMI1"}, {"HDMI 2", "KEY_HDMI2"}, {"HDMI 3", "KEY_HDMI3"},
-            {"HDMI 4", "KEY_HDMI4"}, {"טלוויזיה", "KEY_TV"}, {"אנטנה", "KEY_ANTENA"},
             {"יחס תמונה", "KEY_PICTURE_SIZE"}, {"מצב תמונה", "KEY_PMODE"}, {"טיימר שינה", "KEY_SLEEP"},
-            {"תיאור קולי", "KEY_AD"}, {"מדריך למשתמש", "KEY_E_MANUAL"}, {"Ambient", "KEY_AMBIENT"},
-            {"Bixby", "KEY_BT_VOICE"}, {"מקלדת", "KEY_KEYBOARD"}, {"תוכן", "KEY_CONTENTS"},
-            {"שפת שמע", "KEY_MTS"}, {"עמוד ▲", "KEY_PAGE_UP"}, {"עמוד ▼", "KEY_PAGE_DOWN"},
-            {"זום", "KEY_ZOOM1"}, {"מועדפים", "KEY_FAVCH"}, {"3D", "KEY_3D"},
-            {"כבה", "KEY_POWEROFF"}, {"הדלק", "KEY_POWERON"}, {"Teletext", "KEY_TTX_MIX"},
+            {"כתוביות", "KEY_SUB_TITLE"}, {"תיאור קולי", "KEY_AD"}, {"מדריך", "KEY_E_MANUAL"},
+            {"Ambient", "KEY_AMBIENT"}, {"Bixby", "KEY_BT_VOICE"}, {"כלים", "KEY_TOOLS"},
+            {"שפת שמע", "KEY_MTS"}, {"הקלטה", "KEY_REC"}, {"השהה", "KEY_PAUSE"},
+            {"עמוד ▲", "KEY_PAGE_UP"}, {"עמוד ▼", "KEY_PAGE_DOWN"}, {"זום", "KEY_ZOOM1"},
+            {"מועדפים", "KEY_FAVCH"}, {"כבה", "KEY_POWEROFF"}, {"הדלק", "KEY_POWERON"},
         };
         LinearLayout r = null;
         for (int i = 0; i < extra.length; i++) {
             if (i % 3 == 0) { r = hbox(); v.addView(r); }
-            TextView t = surfacePill(extra[i][0]);
-            t.setTextSize(13);
+            TextView t = text(extra[i][0], 13, INK, true);
+            t.setGravity(Gravity.CENTER);
+            t.setBackground(ripple(cardBg(dp(16)), dp(16), 0x224B5EEA));
+            t.setElevation(dp(3));
             key(t, extra[i][1], extra[i][0], false);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(48), 1f);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(50), 1f);
             lp.setMargins(dp(4), dp(4), dp(4), dp(4));
             r.addView(t, lp);
         }
 
-        v.addView(sectionTitle("🔧  שליחת קוד מקש ידני"));
+        v.addView(sectionTitle("שליחת קוד מקש ידני"));
         LinearLayout ck = hbox();
         EditText kf = field("למשל KEY_FACTORY");
         ck.addView(kf, new LinearLayout.LayoutParams(0, dp(52), 1f));
-        TextView ks = pill("שלח", ACC, ACC2);
+        TextView ks = primary("שלח");
         fx(ks, null, false, () -> { String k = kf.getText().toString().trim().toUpperCase(Locale.ROOT); send(k, k); });
-        ck.addView(ks, slp2());
+        ck.addView(ks, sideBtn());
         v.addView(ck);
         return v;
     }
 
-    private LinearLayout.LayoutParams slp2() {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(80), dp(52));
+    private LinearLayout.LayoutParams sideBtn() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(84), dp(52));
         lp.setMargins(dp(8), 0, 0, 0);
         return lp;
     }
 
-    // ============================ DISCOVERY ============================
-    private FrameLayout buildDiscovery() {
+    private View header(String title, String sub) {
+        LinearLayout h = vbox();
+        h.setPadding(dp(4), 0, 0, dp(12));
+        h.addView(text(title, 24, INK, true));
+        h.addView(text(sub, 13, SUB, false));
+        return h;
+    }
+
+    private View bottomNav() {
+        LinearLayout n = hbox();
+        n.setBackgroundColor(CARD);
+        n.setElevation(dp(12));
+        n.setPadding(0, dp(8), 0, dp(8));
+        String[][] items = {{"✥", "שלט"}, {"▭", "HDMI"}, {"▦", "אפליקציות"}, {"⚙", "הגדרות"}};
+        for (int i = 0; i < items.length; i++) {
+            final int idx = i;
+            LinearLayout col = vbox();
+            col.setGravity(Gravity.CENTER);
+            col.setBackground(rippleRound(dp(16), 0x224B5EEA));
+            TextView ic = text(items[i][0], 22, SUB, true);
+            ic.setGravity(Gravity.CENTER);
+            TextView lb = text(items[i][1], 12, SUB, true);
+            lb.setGravity(Gravity.CENTER);
+            col.addView(ic);
+            col.addView(lb);
+            navItems.add(new TextView[]{ic, lb});
+            fx(col, null, false, () -> selectScreen(idx));
+            n.addView(col, new LinearLayout.LayoutParams(0, dp(58), 1f));
+        }
+        return n;
+    }
+
+    private void selectScreen(int idx) {
+        for (int i = 0; i < screens.size(); i++) {
+            View s = screens.get(i);
+            boolean on = i == idx;
+            if (on && s.getVisibility() != View.VISIBLE) { s.setVisibility(View.VISIBLE); s.setAlpha(0f); s.animate().alpha(1f).setDuration(180).start(); }
+            else if (on) s.setVisibility(View.VISIBLE);
+            else s.setVisibility(View.GONE);
+            if (i < navItems.size()) {
+                navItems.get(i)[0].setTextColor(on ? ACC : SUB);
+                navItems.get(i)[1].setTextColor(on ? ACC : SUB);
+            }
+        }
+    }
+
+    private FrameLayout buildDeviceScreen() {
         FrameLayout o = new FrameLayout(this);
-        o.setBackgroundColor(0xCC000000);
+        o.setBackgroundColor(BG);
         o.setClickable(true);
+        LinearLayout v = vbox();
+        o.addView(v, new FrameLayout.LayoutParams(-1, -1));
+
+        LinearLayout bar = hbox();
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(16), dp(12), dp(16), dp(12));
+        TextView back = iconBtn("→", 22);
+        fx(back, null, false, this::closeDiscovery);
+        bar.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout mid = hbox();
+        mid.setGravity(Gravity.CENTER);
+        scanTitle = text("בחר מכשיר", 20, INK, true);
+        mid.addView(scanTitle);
+        scanSpin = new ProgressBar(this);
+        scanSpin.setIndeterminateTintList(ColorStateList.valueOf(ACC));
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(dp(24), dp(24));
+        sp.setMargins(dp(10), 0, 0, 0);
+        mid.addView(scanSpin, sp);
+        bar.addView(mid, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView skip = text("דלג", 16, SUB, true);
+        skip.setPadding(dp(8), dp(8), dp(8), dp(8));
+        fx(skip, null, false, this::closeDiscovery);
+        bar.addView(skip);
+        v.addView(bar);
 
         ScrollView sv = new ScrollView(this);
-        LinearLayout card = vbox();
-        card.setPadding(dp(20), dp(20), dp(20), dp(20));
-        GradientDrawable cg = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{0xFF1E2640, 0xFF141A2C});
-        cg.setCornerRadius(dp(28));
-        cg.setStroke(dp(1), STROKE);
-        card.setBackground(cg);
-        card.setElevation(dp(16));
-        sv.addView(card);
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER);
-        lp.setMargins(dp(16), dp(40), dp(16), dp(40));
-        o.addView(sv, lp);
+        LinearLayout inner = vbox();
+        inner.setPadding(dp(18), dp(4), dp(18), dp(24));
+        sv.addView(inner);
+        v.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        LinearLayout top = hbox();
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        scanTitle = text("חיפוש טלוויזיות ב-Wi-Fi", 20, TXT, true);
-        top.addView(scanTitle, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = circle("✕", 16, SURF2, SURF);
-        fx(close, null, false, this::closeDiscovery);
-        top.addView(close, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        card.addView(top);
-
-        TextView hint = text("ודא שהטלפון והטלוויזיה מחוברים לאותה רשת Wi-Fi ושהטלוויזיה דולקת", 13, SUB, false);
-        hint.setPadding(0, dp(6), 0, dp(12));
-        card.addView(hint);
-
-        scanBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        scanBar.setIndeterminate(true);
-        scanBar.setIndeterminateTintList(ColorStateList.valueOf(ACC));
-        card.addView(scanBar, new LinearLayout.LayoutParams(-1, dp(6)));
-        card.addView(space(10));
+        LinearLayout warn = hbox();
+        warn.setGravity(Gravity.CENTER_VERTICAL);
+        warn.setPadding(dp(14), dp(12), dp(14), dp(12));
+        warn.setBackground(round(0xFFFFF6E5, dp(16), 0xFFFBE2B0));
+        TextView wi = text("!", 18, ORANGE, true);
+        wi.setGravity(Gravity.CENTER);
+        GradientDrawable wg = new GradientDrawable(); wg.setShape(GradientDrawable.OVAL); wg.setStroke(dp(2), ORANGE);
+        wi.setBackground(wg);
+        warn.addView(wi, new LinearLayout.LayoutParams(dp(32), dp(32)));
+        TextView wt = text("ודא שהטלפון והטלוויזיה מחוברים לאותה רשת Wi-Fi ושהטלוויזיה דולקת.", 14, 0xFF6B5A2E, false);
+        wt.setPadding(dp(12), 0, 0, 0);
+        warn.addView(wt, new LinearLayout.LayoutParams(0, -2, 1f));
+        inner.addView(warn);
 
         resultsList = vbox();
-        card.addView(resultsList);
+        resultsList.setPadding(0, dp(12), 0, dp(12));
+        inner.addView(resultsList);
 
-        TextView again = pill("🔄  חפש שוב", ACC, ACC2);
+        TextView again = primary("🔄  חפש שוב");
         fx(again, null, false, this::startScan);
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(-1, dp(52));
-        alp.setMargins(0, dp(12), 0, 0);
-        card.addView(again, alp);
+        inner.addView(again, new LinearLayout.LayoutParams(-1, dp(54)));
 
-        card.addView(sectionTitle("או הזן כתובת IP ידנית"));
+        inner.addView(sectionTitle("הזנת כתובת IP ידנית"));
         LinearLayout mr = hbox();
         manualIp = field("192.168.1.50");
         manualIp.setInputType(InputType.TYPE_CLASS_PHONE);
         manualIp.setText(prefs.getString("ip", ""));
         mr.addView(manualIp, new LinearLayout.LayoutParams(0, dp(52), 1f));
-        TextView go = pill("התחבר", ACC, ACC2);
+        TextView go = primary("התחבר");
         fx(go, null, false, () -> {
             String ip = manualIp.getText().toString().trim();
             if (ip.isEmpty()) return;
             prefs.edit().putString("ip", ip).apply();
             closeDiscovery(); connect();
         });
-        mr.addView(go, slp2());
-        card.addView(mr);
-        TextView ipHelp = text("בטלוויזיה: הגדרות ← כללי ← רשת ← מצב רשת ← הגדרות IP", 11, 0xFF5E6A8A, false);
-        ipHelp.setPadding(0, dp(6), 0, 0);
-        card.addView(ipHelp);
+        mr.addView(go, sideBtn());
+        inner.addView(mr);
+        TextView ipHelp = text("בטלוויזיה: הגדרות ← כללי ← רשת ← מצב רשת", 12, SUB, false);
+        ipHelp.setPadding(dp(4), dp(6), 0, dp(16));
+        inner.addView(ipHelp);
 
-        card.addView(sectionTitle("הגדרות חיבור"));
-        LinearLayout sr = hbox();
-        modeBtn = surfacePill(modeLabel());
-        modeBtn.setTextSize(13);
-        fx(modeBtn, null, false, this::cycleMode);
-        LinearLayout.LayoutParams m1 = new LinearLayout.LayoutParams(0, dp(50), 1f);
-        m1.setMargins(0, 0, dp(4), 0);
-        sr.addView(modeBtn, m1);
-        TextView test = surfacePill("🩺  בדיקת כל השיטות");
-        test.setTextSize(13);
-        fx(test, null, false, this::testAll);
-        LinearLayout.LayoutParams m2 = new LinearLayout.LayoutParams(0, dp(50), 1f);
-        m2.setMargins(dp(4), 0, 0, 0);
-        sr.addView(test, m2);
-        card.addView(sr);
-
-        card.addView(sectionTitle("כתובת MAC להדלקה דרך Wi-Fi (מתמלאת אוטומטית)"));
-        LinearLayout macRow = hbox();
-        macField = field("AA:BB:CC:DD:EE:FF");
-        macField.setText(prefs.getString("mac", ""));
-        macRow.addView(macField, new LinearLayout.LayoutParams(0, dp(52), 1f));
-        TextView save = surfacePill("שמור");
-        fx(save, "נשמר", false, () -> prefs.edit().putString("mac", macField.getText().toString().trim()).apply());
-        macRow.addView(save, slp2());
-        card.addView(macRow);
+        TextView irBtn = text("מצב IR (אינפרא-אדום)", 16, INK, true);
+        irBtn.setGravity(Gravity.CENTER);
+        irBtn.setBackground(ripple(cardBg(dp(20)), dp(20), 0x224B5EEA));
+        irBtn.setElevation(dp(3));
+        fx(irBtn, null, false, () -> {
+            if (!hasIr()) { flash("לטלפון הזה אין משדר אינפרא-אדום", false); return; }
+            sendMode = 2; if (modeBtn != null) modeBtn.setText("⇆\n" + modeLabel());
+            prefs.edit().putString("tvname", "Samsung · IR").apply();
+            tvTitle.setText("Samsung · IR");
+            setDot(GREEN);
+            closeDiscovery();
+            flash("מצב אינפרא-אדום פעיל", true);
+        });
+        inner.addView(irBtn, new LinearLayout.LayoutParams(-1, dp(60)));
         return o;
     }
 
     private void openDiscovery() {
         overlay.setVisibility(View.VISIBLE);
+        overlay.setTranslationX(-dp(40));
         overlay.setAlpha(0f);
-        overlay.animate().alpha(1f).setDuration(200).start();
+        overlay.animate().alpha(1f).translationX(0).setDuration(220).start();
         startScan();
     }
 
     private void closeDiscovery() {
         scanning = false;
-        overlay.animate().alpha(0f).setDuration(180).withEndAction(() -> overlay.setVisibility(View.GONE)).start();
+        overlay.animate().alpha(0f).translationX(-dp(40)).setDuration(180).withEndAction(() -> overlay.setVisibility(View.GONE)).start();
     }
 
     private void startScan() {
@@ -566,8 +854,8 @@ public class MainActivity extends Activity implements TvLink.Listener {
         scanning = true;
         seen.clear();
         resultsList.removeAllViews();
-        scanBar.setVisibility(View.VISIBLE);
-        scanTitle.setText("מחפש טלוויזיות...");
+        scanSpin.setVisibility(View.VISIBLE);
+        scanTitle.setText("מחפש מכשירים");
         final CountDownLatch done = new CountDownLatch(2);
         new Thread(() -> { try { ssdpSearch(); } finally { done.countDown(); } }).start();
         new Thread(() -> { try { subnetScan(); } finally { done.countDown(); } }).start();
@@ -575,13 +863,14 @@ public class MainActivity extends Activity implements TvLink.Listener {
             try { done.await(45, TimeUnit.SECONDS); Thread.sleep(1500); } catch (InterruptedException ignored) {}
             scanning = false;
             ui.post(() -> {
-                scanBar.setVisibility(View.INVISIBLE);
+                scanSpin.setVisibility(View.GONE);
+                scanTitle.setText("בחר מכשיר");
                 if (resultsList.getChildCount() == 0) {
-                    scanTitle.setText("לא נמצאו טלוויזיות");
-                    TextView t = text("נסה: להדליק את הטלוויזיה, לבדוק שהיא באותה רשת, או להזין IP ידנית למטה", 13, SUB, false);
-                    t.setPadding(0, dp(8), 0, dp(4));
+                    TextView t = text("לא נמצאו טלוויזיות. הדלק את הטלוויזיה ונסה שוב, או הזן IP ידנית.", 14, SUB, false);
+                    t.setGravity(Gravity.CENTER);
+                    t.setPadding(dp(8), dp(24), dp(8), dp(24));
                     resultsList.addView(t);
-                } else scanTitle.setText("נמצאו " + resultsList.getChildCount() + " טלוויזיות");
+                }
             });
         }).start();
     }
@@ -589,7 +878,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
     private void ssdpSearch() {
         WifiManager.MulticastLock lock = null;
         try {
-            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm != null) { lock = wm.createMulticastLock("samsung-ssdp"); lock.setReferenceCounted(false); lock.acquire(); }
             DatagramSocket ds = new DatagramSocket();
             ds.setSoTimeout(800);
@@ -652,8 +941,8 @@ public class MainActivity extends Activity implements TvLink.Listener {
         String name = TvLink.jsonField(info, "name");
         String model = TvLink.jsonField(info, "modelName");
         String mac = TvLink.jsonField(info, "wifiMac");
-        String kind = tizen ? "Tizen · Wi-Fi" : legacy ? "דגם 2010-2015" : "Samsung";
-        final String n = name != null ? name.replace("[TV] ", "") : "Samsung TV";
+        String kind = tizen ? "Wi-Fi" : legacy ? "דגם ישן" : "Samsung";
+        final String n = name != null ? name : "Samsung TV";
         final String sub = (model != null ? model + " · " : "") + ip;
         ui.post(() -> addResult(ip, n, sub, kind, mac));
     }
@@ -661,26 +950,33 @@ public class MainActivity extends Activity implements TvLink.Listener {
     private void addResult(String ip, String name, String sub, String kind, String mac) {
         LinearLayout card = hbox();
         card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(dp(14), dp(12), dp(14), dp(12));
-        card.setBackground(ripple(round(SURF2, dp(18), STROKE), dp(18)));
-        TextView icon = circle("📺", 22, ACC, ACC2);
-        card.addView(icon, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        card.setBackground(ripple(cardBg(dp(20)), dp(20), 0x224B5EEA));
+        card.setElevation(dp(4));
+        TextView icon = text("📺", 22, INK, false);
+        icon.setGravity(Gravity.CENTER);
+        icon.setBackground(round(0xFFEEF0FD, dp(16), 0));
+        card.addView(icon, new LinearLayout.LayoutParams(dp(50), dp(50)));
         LinearLayout t = vbox();
-        t.setPadding(dp(12), 0, dp(12), 0);
-        t.addView(text(name, 16, TXT, true));
+        t.setPadding(dp(14), 0, dp(10), 0);
+        TextView nm = text(name, 16, INK, true);
+        nm.setSingleLine(true);
+        nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        t.addView(nm);
         t.addView(text(sub, 12, SUB, false));
         card.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
         TextView k = text(kind, 11, GREEN, true);
         k.setPadding(dp(10), dp(4), dp(10), dp(4));
-        k.setBackground(round(0x2230C67C, dp(10), 0));
+        k.setBackground(round(0x1A2FB872, dp(10), 0));
         card.addView(k);
         fx(card, "מתחבר ל-" + name, false, () -> {
-            SharedPreferences.Editor e = prefs.edit().putString("ip", ip).putString("tvname", name + " · " + sub);
+            SharedPreferences.Editor e = prefs.edit().putString("ip", ip).putString("tvname", name);
             if (mac != null && !mac.isEmpty()) e.putString("mac", mac);
             e.apply();
             manualIp.setText(ip);
-            if (mac != null) macField.setText(mac);
-            tvNameText.setText(name + " · " + sub);
+            if (mac != null && macField != null) macField.setText(mac);
+            tvTitle.setText(name);
+            if (sendMode == 2) sendMode = 0;
             closeDiscovery();
             connect();
         });
@@ -689,14 +985,12 @@ public class MainActivity extends Activity implements TvLink.Listener {
         card.setAlpha(0f); card.setTranslationY(dp(16));
         resultsList.addView(card, lp);
         card.animate().alpha(1f).translationY(0).setDuration(260).start();
-        scanTitle.setText("נמצאו " + resultsList.getChildCount() + " טלוויזיות" + (scanning ? "..." : ""));
     }
 
-    // ============================ LOGIC ============================
     private void connect() {
         String ip = prefs.getString("ip", "");
-        if (ip.isEmpty()) { refreshStatus("לא נבחרה טלוויזיה"); return; }
-        refreshStatus("מתחבר ל-" + ip + "...");
+        if (ip.isEmpty()) { setDot(RED); return; }
+        setDot(ORANGE);
         bg.execute(() -> tv.connect(ip, prefs.getString("token", "")));
     }
 
@@ -704,7 +998,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
 
     private void cycleMode() {
         sendMode = (sendMode + 1) % 3;
-        modeBtn.setText(modeLabel());
+        modeBtn.setText("⇆\n" + modeLabel());
         if (sendMode == 2 && !hasIr()) flash("לטלפון הזה אין משדר אינפרא-אדום", false);
     }
 
@@ -721,7 +1015,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
             });
             return;
         }
-        if (sendMode != 1 && sendIr(key)) { flash(label + " · IR", true); return; }
+        if (sendMode != 1 && sendIr(key)) { flash(label, true); return; }
         if (sendMode == 2) { flash(hasIr() ? "אין קוד IR למקש הזה" : "אין משדר IR בטלפון", false); return; }
         flash("לא מחובר – מתחבר...", false);
         connect();
@@ -748,12 +1042,13 @@ public class MainActivity extends Activity implements TvLink.Listener {
         String mac = prefs.getString("mac", "");
         String ip = prefs.getString("ip", "");
         boolean irOk = sendMode != 1 && sendIr("KEY_POWER");
-        if (irOk) flash("הפעלה · IR", true);
+        if (irOk) flash("הפעלה / כיבוי", true);
         if (sendMode != 2 && !mac.isEmpty()) {
-            flash("שולח פקודת הדלקה ברשת...", true);
+            if (!irOk) flash("שולח פקודת הדלקה ברשת...", true);
+            setDot(ORANGE);
             bg.execute(() -> {
                 try { TvLink.wakeOnLan(mac, ip.isEmpty() ? null : ip); } catch (Exception e) { flash("שגיאה: " + e.getMessage(), false); }
-                try { Thread.sleep(6000); } catch (InterruptedException ignored) {}
+                sleep(6000);
                 tv.connect(ip, prefs.getString("token", ""));
             });
         } else if (!irOk) {
@@ -785,8 +1080,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
             sb.append("MAC להדלקה: ").append(prefs.getString("mac", "").isEmpty() ? "✗" : "✓").append('\n');
             sb.append("חיבור נוכחי: ").append(tv.modeName());
             String res = sb.toString();
-            ui.post(() -> new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                    .setTitle("תוצאות בדיקה").setMessage(res)
+            ui.post(() -> new AlertDialog.Builder(this).setTitle("תוצאות בדיקה").setMessage(res)
                     .setPositiveButton("התחבר עכשיו", (d, w) -> connect()).setNegativeButton("סגור", null).show());
         });
     }
@@ -798,7 +1092,6 @@ public class MainActivity extends Activity implements TvLink.Listener {
         catch (Exception e) { return false; }
     }
 
-    // ============================ FEEDBACK ============================
     private void haptic() {
         try {
             if (vib == null) return;
@@ -814,7 +1107,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
     private void flash(String msg, boolean ok) {
         ui.post(() -> {
             chip.setText((ok ? "✓  " : "✕  ") + msg);
-            chip.setBackground(round(ok ? 0xF0213A2E : 0xF03A2125, dp(24), ok ? 0x6630C67C : 0x66E5484D));
+            chip.setBackground(round(ok ? 0xEE2A3052 : 0xEEE5484D, dp(22), 0));
             ui.removeCallbacks(hideChip);
             chip.animate().cancel();
             chip.setTranslationY(-dp(10));
@@ -830,31 +1123,35 @@ public class MainActivity extends Activity implements TvLink.Listener {
 
     private void fx(View v, String flashMsg, boolean repeat, Runnable action) {
         final ScheduledExecutorService[] rep = new ScheduledExecutorService[1];
+        final boolean[] longFired = new boolean[1];
+        final Runnable longPress = () -> { if (v.isLongClickable()) { longFired[0] = true; v.performLongClick(); } };
         v.setClickable(true);
         v.setOnTouchListener((view, e) -> {
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
+                    longFired[0] = false;
                     view.drawableHotspotChanged(e.getX(), e.getY());
                     view.setPressed(true);
                     view.animate().cancel();
-                    view.animate().scaleX(0.88f).scaleY(0.88f).alpha(0.85f).setDuration(70).start();
+                    view.animate().scaleX(0.9f).scaleY(0.9f).setDuration(70).start();
                     haptic();
                     if (repeat) {
                         action.run();
                         rep[0] = Executors.newSingleThreadScheduledExecutor();
                         rep[0].scheduleAtFixedRate(() -> ui.post(() -> { haptic(); action.run(); }), 450, 140, TimeUnit.MILLISECONDS);
-                    }
+                    } else ui.postDelayed(longPress, 600);
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     view.drawableHotspotChanged(e.getX(), e.getY());
                     return true;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
+                    ui.removeCallbacks(longPress);
                     view.setPressed(false);
-                    view.animate().scaleX(1f).scaleY(1f).alpha(1f).setInterpolator(new OvershootInterpolator(4f)).setDuration(260).start();
+                    view.animate().scaleX(1f).scaleY(1f).setInterpolator(new OvershootInterpolator(4f)).setDuration(260).start();
                     if (rep[0] != null) { rep[0].shutdownNow(); rep[0] = null; }
                     boolean inside = e.getX() >= 0 && e.getY() >= 0 && e.getX() <= view.getWidth() && e.getY() <= view.getHeight();
-                    if (!repeat && e.getActionMasked() == MotionEvent.ACTION_UP && inside) {
+                    if (!repeat && !longFired[0] && e.getActionMasked() == MotionEvent.ACTION_UP && inside) {
                         if (flashMsg != null) flash(flashMsg, true);
                         action.run();
                     }
@@ -864,12 +1161,9 @@ public class MainActivity extends Activity implements TvLink.Listener {
         });
     }
 
-    // ============================ VIEW FACTORY ============================
     private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
     private LinearLayout vbox() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
     private LinearLayout hbox() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); return l; }
-    private View space(int h) { View s = new View(this); s.setLayoutParams(new LinearLayout.LayoutParams(1, dp(h))); return s; }
-    private LinearLayout.LayoutParams centered(int w, int h) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(w, h); lp.gravity = Gravity.CENTER_HORIZONTAL; return lp; }
 
     private TextView text(String s, int size, int color, boolean bold) {
         TextView t = new TextView(this);
@@ -879,13 +1173,34 @@ public class MainActivity extends Activity implements TvLink.Listener {
     }
 
     private TextView sectionTitle(String s) {
-        TextView t = text(s, 13, 0xFF9DB4FF, true);
-        t.setPadding(dp(2), dp(18), 0, dp(8));
+        TextView t = text(s, 14, SUB, true);
+        t.setPadding(dp(4), dp(20), 0, dp(10));
         return t;
     }
 
-    private static int darker(int c) {
-        return Color.rgb((int) (Color.red(c) * 0.7), (int) (Color.green(c) * 0.7), (int) (Color.blue(c) * 0.7));
+    private TextView iconBtn(String s, int size) {
+        TextView t = text(s, size, ACC, true);
+        t.setGravity(Gravity.CENTER);
+        t.setBackground(rippleRound(dp(16), 0x224B5EEA));
+        return t;
+    }
+
+    private TextView primary(String s) {
+        TextView t = text(s, 15, Color.WHITE, true);
+        t.setGravity(Gravity.CENTER);
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{ACC, ACC2});
+        g.setCornerRadius(dp(18));
+        t.setBackground(ripple(g, dp(18), 0x55FFFFFF));
+        t.setElevation(dp(5));
+        return t;
+    }
+
+    private void setDot(int color) {
+        ui.post(() -> {
+            statusDot.setBackground(round(color, dp(5), 0));
+            statusDot.animate().scaleX(1.5f).scaleY(1.5f).setDuration(180)
+                    .withEndAction(() -> statusDot.animate().scaleX(1f).scaleY(1f).setDuration(180).start()).start();
+        });
     }
 
     private GradientDrawable round(int color, int radius, int stroke) {
@@ -895,97 +1210,40 @@ public class MainActivity extends Activity implements TvLink.Listener {
         return g;
     }
 
-    private GradientDrawable grad(int c1, int c2, int radius) {
-        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{c1, c2});
-        g.setCornerRadius(radius);
-        return g;
-    }
-
-    private Drawable ripple(Drawable content, int radius) {
+    private Drawable ripple(Drawable content, int radius, int color) {
         GradientDrawable mask = new GradientDrawable();
         mask.setColor(Color.WHITE); mask.setCornerRadius(radius);
-        return new RippleDrawable(ColorStateList.valueOf(0x55FFFFFF), content, mask);
+        return new RippleDrawable(ColorStateList.valueOf(color), content, mask);
     }
 
-    private TextView base(String s, int size) {
-        TextView t = text(s, size, TXT, true);
-        t.setGravity(Gravity.CENTER);
-        t.setMaxLines(2);
-        return t;
+    private Drawable rippleRound(int radius, int color) {
+        GradientDrawable mask = new GradientDrawable();
+        mask.setColor(Color.WHITE); mask.setCornerRadius(radius);
+        return new RippleDrawable(ColorStateList.valueOf(color), null, mask);
     }
 
-    private TextView pill(String s, int c1, int c2) {
-        TextView t = base(s, 15);
-        t.setBackground(ripple(grad(c1, c2, dp(18)), dp(18)));
-        t.setElevation(dp(4));
-        return t;
-    }
-
-    private TextView surfacePill(String s) {
-        TextView t = base(s, 15);
-        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{SURF2, SURF});
-        g.setCornerRadius(dp(18));
-        g.setStroke(dp(1), STROKE);
-        t.setBackground(ripple(g, dp(18)));
-        t.setElevation(dp(3));
-        return t;
-    }
-
-    private TextView keyPill(String label, String k, String text) {
-        TextView t = surfacePill(text);
-        key(t, k, label, false);
-        return t;
-    }
-
-    private TextView circle(String s, int size, int c1, int c2) {
-        TextView t = base(s, size);
-        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{c1, c2});
-        g.setShape(GradientDrawable.OVAL);
-        g.setStroke(dp(1), STROKE);
+    private Drawable rippleOval(Drawable content, int color) {
         GradientDrawable mask = new GradientDrawable();
         mask.setShape(GradientDrawable.OVAL); mask.setColor(Color.WHITE);
-        t.setBackground(new RippleDrawable(ColorStateList.valueOf(0x55FFFFFF), g, mask));
-        t.setElevation(dp(5));
-        return t;
-    }
-
-    private TextView ghost(String s, int size) {
-        TextView t = base(s, size);
-        t.setTextColor(0xFFDCE3F5);
-        GradientDrawable mask = new GradientDrawable();
-        mask.setShape(GradientDrawable.OVAL); mask.setColor(Color.WHITE);
-        t.setBackground(new RippleDrawable(ColorStateList.valueOf(0x553D7BFF), null, mask));
-        return t;
+        return new RippleDrawable(ColorStateList.valueOf(color), content, mask);
     }
 
     private EditText field(String hint) {
         EditText e = new EditText(this);
         e.setHint(hint);
-        e.setTextColor(TXT); e.setHintTextColor(0xFF5E6A8A);
+        e.setTextColor(INK); e.setHintTextColor(SOFT);
         e.setTextSize(15);
         e.setSingleLine(true);
         e.setPadding(dp(14), 0, dp(14), 0);
-        e.setBackground(round(0xFF0E1322, dp(16), STROKE));
+        e.setBackground(round(CARD, dp(16), STROKE));
         return e;
     }
 
-    // ============================ STATUS ============================
-    private void refreshStatus(String msg) {
-        ui.post(() -> {
-            boolean on = tv.isConnected();
-            boolean busy = msg != null && msg.startsWith("מתחבר");
-            statusDot.setBackground(round(on ? GREEN : busy ? ORANGE : RED, dp(5), 0));
-            statusText.setText(msg != null ? msg : on ? "מחובר · " + tv.modeName() : "לא מחובר");
-            if (on) {
-                statusDot.animate().scaleX(1.6f).scaleY(1.6f).setDuration(200)
-                        .withEndAction(() -> statusDot.animate().scaleX(1f).scaleY(1f).setDuration(200).start()).start();
-            }
-        });
-    }
-
     @Override public void onStatus(String msg) {
-        refreshStatus(tv.isConnected() ? "מחובר · " + tv.modeName() : msg);
-        if (tv.isConnected()) flash("מחובר לטלוויזיה", true);
+        boolean on = tv.isConnected();
+        setDot(on ? GREEN : RED);
+        if (on) flash("מחובר לטלוויזיה", true);
+        else if (msg != null && !msg.isEmpty()) flash(msg.length() > 40 ? "לא הצלחתי להתחבר" : msg, false);
     }
 
     @Override public void onToken(String token) { prefs.edit().putString("token", token).apply(); }
