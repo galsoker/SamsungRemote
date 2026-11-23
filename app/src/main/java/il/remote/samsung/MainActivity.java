@@ -57,6 +57,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
     private FrameLayout rootView;
     private final List<String[]> foundTvs = Collections.synchronizedList(new ArrayList<>());
     private volatile boolean wizardPending = false;
+    private final Map<String, List<String>> ssdpLoc = new ConcurrentHashMap<>();
     private final List<View> screens = new ArrayList<>();
     private final List<TextView[]> navItems = new ArrayList<>();
 
@@ -922,6 +923,8 @@ public class MainActivity extends Activity implements TvLink.Listener {
                     String s = new String(p.getData(), 0, p.getLength(), StandardCharsets.UTF_8).toLowerCase(Locale.ROOT);
                     if (s.contains("samsung") || s.contains("tizen")) {
                         final String ip = p.getAddress().getHostAddress();
+                        java.util.regex.Matcher lm = java.util.regex.Pattern.compile("(?im)^location:\\s*(\\S+)").matcher(new String(p.getData(), 0, p.getLength(), StandardCharsets.UTF_8));
+                        if (lm.find()) { List<String> l = ssdpLoc.get(ip); if (l == null) { l = Collections.synchronizedList(new ArrayList<>()); ssdpLoc.put(ip, l); } if (!l.contains(lm.group(1))) l.add(lm.group(1)); }
                         bg2.execute(() -> probe(ip, true));
                     }
                 } catch (SocketTimeoutException ignored) {}
@@ -958,13 +961,23 @@ public class MainActivity extends Activity implements TvLink.Listener {
         if (seen.contains(ip)) return;
         boolean tizen = portOpen(ip, 8001, 500) || portOpen(ip, 8002, 500);
         boolean legacy = !tizen && portOpen(ip, 55000, 500);
-        if (!tizen && !legacy && !fromSsdp) return;
+        boolean dlna = !tizen && !legacy && (portOpen(ip, 9197, 500) || portOpen(ip, 7676, 500));
+        if (dlna && !fromSsdp) {
+            String d = TvLink.http("GET", "http://" + ip + ":9197/dmr");
+            if (d == null || !d.toLowerCase(Locale.ROOT).contains("samsung")) dlna = false;
+        }
+        if (!tizen && !legacy && !dlna && !fromSsdp) return;
         if (!seen.add(ip)) return;
         String info = tizen ? TvLink.http("GET", "http://" + ip + ":8001/api/v2/") : null;
         String name = TvLink.jsonField(info, "name");
         String model = TvLink.jsonField(info, "modelName");
         String mac = TvLink.jsonField(info, "wifiMac");
-        String kind = tizen ? "Wi-Fi" : legacy ? "דגם ישן" : "Samsung";
+        String kind = tizen ? "Wi-Fi" : legacy ? "דגם ישן" : dlna ? "DLNA" : "Samsung";
+        if (name == null && info == null) {
+            String d = TvLink.http("GET", "http://" + ip + ":9197/dmr");
+            java.util.regex.Matcher fm = java.util.regex.Pattern.compile("<friendlyName>([^<]+)</friendlyName>").matcher(d == null ? "" : d);
+            if (fm.find()) name = fm.group(1);
+        }
         final String n = name != null ? name : "Samsung TV";
         final String sub = (model != null ? model + " · " : "") + ip;
         foundTvs.add(new String[]{ip, n, mac, tizen ? "t" : legacy ? "l" : "s"});
@@ -1017,7 +1030,8 @@ public class MainActivity extends Activity implements TvLink.Listener {
         setDot(ORANGE);
         int m = prefs.getInt("method", 0);
         bg.execute(() -> {
-            if (m >= 1 && m <= 3 && tv.connectWith(ip, prefs.getString("token", ""), m)) onStatus("ok");
+            if (m >= 1 && m <= 9 && m != 4 && m != 5 && tv.connectWith(ip, prefs.getString("token", ""), m)) onStatus("ok");
+            else if (m == 5) { tv.connect(ip, prefs.getString("token", "")); if (!tv.isConnected()) setDot(GREEN); }
             else tv.connect(ip, prefs.getString("token", ""));
         });
     }
@@ -1032,6 +1046,16 @@ public class MainActivity extends Activity implements TvLink.Listener {
 
     private void send(String key, String label) {
         if (key == null || key.isEmpty()) return;
+        String dl = prefs.getString("dlna_url", "");
+        if (!dl.isEmpty() && prefs.getInt("method", 0) == 5 && !tv.isConnected()
+                && (key.equals("KEY_VOLUP") || key.equals("KEY_VOLDOWN") || key.equals("KEY_MUTE"))) {
+            flash(label, true);
+            bg.execute(() -> {
+                boolean ok = key.equals("KEY_MUTE") ? TvLink.dlnaMuteToggle(dl) : TvLink.dlnaVolume(dl, key.equals("KEY_VOLUP") ? 1 : -1);
+                if (!ok) flash("השליחה נכשלה", false);
+            });
+            return;
+        }
         if (sendMode != 2 && tv.isConnected()) {
             flash(label, true);
             bg.execute(() -> {
@@ -1103,6 +1127,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
                 sb.append("WSS 8002 (2018+): ").append(portOpen(ip, 8002, 1000) ? "✓" : "✗").append('\n');
                 sb.append("WS 8001: ").append(portOpen(ip, 8001, 1000) ? "✓" : "✗").append('\n');
                 sb.append("ישן 55000 (2010-2015): ").append(portOpen(ip, 55000, 1000) ? "✓" : "✗").append('\n');
+                sb.append("UPnP/DLNA 9197/7676: ").append(portOpen(ip, 9197, 1000) || portOpen(ip, 7676, 1000) ? "✓" : "✗").append('\n');
             } else sb.append("לא נבחרה טלוויזיה\n");
             sb.append("משדר IR בטלפון: ").append(hasIr() ? "✓" : "✗").append('\n');
             sb.append("MAC להדלקה: ").append(prefs.getString("mac", "").isEmpty() ? "✗" : "✓").append('\n');
@@ -1284,10 +1309,11 @@ public class MainActivity extends Activity implements TvLink.Listener {
 
     private void startWizardNow() {
         cands.clear();
-        String[] mnames = {"", "Wi-Fi מאובטח (8002)", "Wi-Fi (8001)", "פרוטוקול ישן (55000)"};
+        String[] mnames = {"", "Tizen 2018+ · מאובטח 8002", "Tizen 2016-2017 · 8001", "C/D/E/F/H 2010-2015 · 55000",
+                "", "UPnP/DLNA · כל השנים", "2010-2015 · 55000 (גרסה חלופית)", "Tizen 2016 מוקדם · 8001", "Tizen 2018+ · צימוד מחדש 8002", "Tizen ראשון · API v1"};
         synchronized (foundTvs) {
             for (String[] t : foundTvs) {
-                int[] order = "l".equals(t[3]) ? new int[]{3, 1, 2} : new int[]{1, 2, 3};
+                int[] order = "l".equals(t[3]) ? new int[]{3, 6, 5, 1, 8, 2, 7, 9} : new int[]{1, 8, 2, 7, 9, 5, 3, 6};
                 for (int m : order) {
                     Cand c = new Cand();
                     c.ip = t[0]; c.name = t[1]; c.mac = t[2]; c.method = m;
@@ -1297,7 +1323,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
             }
         }
         if (hasIr()) {
-            for (int a : new int[]{0x07, 0x0E, 0x05}) {
+            for (int a : new int[]{0x07, 0x0E, 0x05, 0x0B, 0x16, 0x00}) {
                 Cand c = new Cand();
                 c.method = 4; c.irAddr = a; c.name = "Samsung · IR";
                 c.label = "אינפרא-אדום · קוד 0x" + Integer.toHexString(a).toUpperCase(Locale.ROOT);
@@ -1398,7 +1424,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
         Cand c = cands.get(candIdx);
         wizStep.setText("ניסיון " + (candIdx + 1) + " מתוך " + cands.size());
         wizTitle.setText(c.label);
-        wizSub.setText(c.method == 1
+        wizSub.setText(c.method == 1 || c.method == 8
                 ? "אם מופיעה בטלוויזיה בקשת אישור – בחר \"אפשר\" עם השלט המקורי, ואז לחץ \"שלח שוב\"."
                 : "תסתכל על הטלוויזיה: האם הופיע סרגל ווליום?");
         sendStepKey();
@@ -1419,6 +1445,10 @@ public class MainActivity extends Activity implements TvLink.Listener {
                     ir.transmit(38000, samsung32(c.irAddr, 0x07));
                     ok = true;
                 } catch (Exception e) { ok = false; }
+            } else if (c.method == 5) {
+                String url = TvLink.dlnaFind(c.ip, ssdpLoc.get(c.ip));
+                ok = url != null && TvLink.dlnaVolume(url, 2);
+                if (ok) prefs.edit().putString("dlna_url", url).apply();
             } else {
                 ok = tv.connectWith(c.ip, prefs.getString("token", ""), c.method);
                 if (ok) { sleep(300); ok = tv.sendKey("KEY_VOLUP", "Click"); sleep(250); tv.sendKey("KEY_VOLUP", "Click"); }
@@ -1452,7 +1482,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
             if (manualIp != null) manualIp.setText(c.ip);
             if (c.mac != null && macField != null) macField.setText(c.mac);
             sendMode = 0;
-            setDot(tv.isConnected() ? GREEN : ORANGE);
+            setDot(tv.isConnected() || c.method == 5 ? GREEN : ORANGE);
         }
         e.apply();
         if (modeBtn != null) modeBtn.setText("⇆\n" + modeLabel());
@@ -1460,7 +1490,7 @@ public class MainActivity extends Activity implements TvLink.Listener {
         closeWizard();
         if (overlay.getVisibility() == View.VISIBLE) closeDiscovery();
         flash("הטלוויזיה קושרה בהצלחה!", true);
-        if (c.method != 4 && !tv.isConnected()) connect();
+        if (c.method != 4 && c.method != 5 && !tv.isConnected()) connect();
     }
 
     @Override public void onStatus(String msg) {
