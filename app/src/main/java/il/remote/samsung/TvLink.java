@@ -15,6 +15,7 @@ import javax.net.ssl.*;
  *  1. WSS port 8002 with token (Tizen 2018+)
  *  2. WS  port 8001 (Tizen 2016-2017)
  *  3. Legacy TCP port 55000 (C/D/E/F/H series 2010-2015)
+ *  + variants and UPnP/DLNA RenderingControl volume
  */
 public class TvLink {
     public interface Listener {
@@ -62,16 +63,22 @@ public class TvLink {
         listener.onStatus("לא הצלחתי להתחבר ל-" + ip + ". בדוק שהטלוויזיה דולקת ובאותה רשת. ננסה אינפרא-אדום אם יש.");
     }
 
-    /** Connect using one specific method: 1 = WSS 8002, 2 = WS 8001, 3 = legacy 55000. Silent (no status callback). */
+    /** Connect using one specific method. Silent (no status callback). */
     public synchronized boolean connectWith(String ip, String token, int method) {
         disconnect();
         this.ip = ip;
         String nameB64 = Base64.getEncoder().encodeToString(APP_NAME.getBytes(StandardCharsets.UTF_8));
         String path = "/api/v2/channels/samsung.remote.control?name=" + URLEncoder.encode(nameB64);
         try {
-            if (method == 1) { openWs(ip, 8002, true, path + (token != null && !token.isEmpty() ? "&token=" + token : "")); mode = 1; }
-            else if (method == 2) { openWs(ip, 8001, false, path); mode = 1; }
-            else { openLegacy(ip); mode = 2; }
+            switch (method) {
+                case 1: openWs(ip, 8002, true, path + (token != null && !token.isEmpty() ? "&token=" + token : "")); mode = 1; break;
+                case 8: openWs(ip, 8002, true, path); mode = 1; break;
+                case 2: openWs(ip, 8001, false, path); mode = 1; break;
+                case 7: openWs(ip, 8001, false, "/api/v2/channels/samsung.remote.control"); mode = 1; break;
+                case 9: openWs(ip, 8001, false, "/api/v1/channels/samsung.remote.control"); mode = 1; break;
+                case 6: openLegacy(ip, "iphone.UN60D6000.iapp.samsung"); mode = 2; break;
+                default: openLegacy(ip, "iphone..iapp.samsung"); mode = 2; break;
+            }
             return true;
         } catch (Exception e) { closeQuiet(); mode = 0; return false; }
     }
@@ -115,7 +122,6 @@ public class TvLink {
         InputStream in = s.getInputStream();
         String head = readHeaders(in);
         if (!head.startsWith("HTTP/1.1 101")) { s.close(); throw new IOException("handshake: " + head); }
-        // wait for the first message (connect / unauthorized) – give the user time to press "Allow" on the TV
         s.setSoTimeout(25000);
         String first = readFrame(in, o);
         if (first != null && first.contains("ms.channel.unauthorized")) {
@@ -205,13 +211,18 @@ public class TvLink {
         return o.toByteArray();
     }
 
-    private void openLegacy(String ip) throws Exception {
+    private void openLegacy(String ip) throws Exception { openLegacy(ip, "iphone..iapp.samsung"); }
+
+    private String legacyApp = "iphone..iapp.samsung";
+
+    private void openLegacy(String ip, String app) throws Exception {
+        legacyApp = app;
         Socket s = new Socket();
         s.connect(new InetSocketAddress(ip, 55000), 3000);
         s.setSoTimeout(15000);
         String localIp = s.getLocalAddress().getHostAddress();
         byte[] payload = cat(new byte[]{0x64, 0x00}, str(localIp, false), str("il-remote-01", false), str(APP_NAME, false));
-        byte[] packet = cat(new byte[]{0x00}, str("iphone..iapp.samsung", true), bytesStr(payload));
+        byte[] packet = cat(new byte[]{0x00}, str(app, true), bytesStr(payload));
         OutputStream o = s.getOutputStream();
         o.write(packet); o.flush();
         InputStream in = s.getInputStream();
@@ -232,7 +243,7 @@ public class TvLink {
     private synchronized boolean sendLegacy(String key) {
         try {
             byte[] payload = cat(new byte[]{0, 0, 0}, str(key, false));
-            out.write(cat(new byte[]{0x00}, str("iphone..iapp.samsung", true), bytesStr(payload)));
+            out.write(cat(new byte[]{0x00}, str(legacyApp, true), bytesStr(payload)));
             out.flush();
             return true;
         } catch (Exception e) { mode = 0; return false; }
@@ -289,6 +300,66 @@ public class TvLink {
         if (json == null) return null;
         Matcher m = Pattern.compile("\"" + field + "\"\\s*:\\s*\"([^\"]*)\"").matcher(json);
         return m.find() ? m.group(1) : null;
+    }
+
+    // ---------------- UPnP / DLNA RenderingControl (works on many Samsung models of every era) ----------------
+    public static String dlnaFind(String ip, java.util.List<String> locations) {
+        java.util.List<String> urls = new java.util.ArrayList<>();
+        if (locations != null) urls.addAll(locations);
+        urls.add("http://" + ip + ":9197/dmr");
+        urls.add("http://" + ip + ":7676/smp_15_");
+        urls.add("http://" + ip + ":7676/smp_16_");
+        urls.add("http://" + ip + ":7676/smp_2_");
+        for (String u : urls) {
+            String xml = http("GET", u);
+            if (xml == null) continue;
+            int i = xml.indexOf("RenderingControl:1");
+            if (i < 0) continue;
+            Matcher m = Pattern.compile("<controlURL>([^<]+)</controlURL>").matcher(xml.substring(i));
+            if (!m.find()) continue;
+            String ctl = m.group(1).trim();
+            try {
+                URL base = new URL(u);
+                return new URL(base, ctl).toString();
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    private static String soap(String url, String action, String inner) {
+        try {
+            String body = "<?xml version=\"1.0\" encoding=\"utf-8\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>"
+                    + "<u:" + action + " xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\"><InstanceID>0</InstanceID>" + inner + "</u:" + action + "></s:Body></s:Envelope>";
+            HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+            c.setConnectTimeout(1500); c.setReadTimeout(3000);
+            c.setRequestMethod("POST");
+            c.setDoOutput(true);
+            c.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"");
+            c.setRequestProperty("SOAPACTION", "\"urn:schemas-upnp-org:service:RenderingControl:1#" + action + "\"");
+            c.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
+            int code = c.getResponseCode();
+            if (code >= 400) return null;
+            ByteArrayOutputStream b = new ByteArrayOutputStream();
+            InputStream in = c.getInputStream(); byte[] buf = new byte[2048]; int r;
+            while ((r = in.read(buf)) > 0) b.write(buf, 0, r);
+            return b.toString("UTF-8");
+        } catch (Exception e) { return null; }
+    }
+
+    public static boolean dlnaVolume(String url, int delta) {
+        String r = soap(url, "GetVolume", "<Channel>Master</Channel>");
+        if (r == null) return false;
+        Matcher m = Pattern.compile("<CurrentVolume>(\\d+)</CurrentVolume>").matcher(r);
+        if (!m.find()) return false;
+        int v = Math.max(0, Math.min(100, Integer.parseInt(m.group(1)) + delta));
+        return soap(url, "SetVolume", "<Channel>Master</Channel><DesiredVolume>" + v + "</DesiredVolume>") != null;
+    }
+
+    public static boolean dlnaMuteToggle(String url) {
+        String r = soap(url, "GetMute", "<Channel>Master</Channel>");
+        if (r == null) return false;
+        boolean muted = r.contains("<CurrentMute>1</CurrentMute>");
+        return soap(url, "SetMute", "<Channel>Master</Channel><DesiredMute>" + (muted ? 0 : 1) + "</DesiredMute>") != null;
     }
 
     public static void wakeOnLan(String mac, String ip) throws Exception {
